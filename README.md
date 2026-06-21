@@ -138,6 +138,10 @@ Issues and packet captures from other Gen 1 hubs are welcome, especially if a hu
 
 ## Changelog
 
+### 0.1.12
+
+- Added a one-time session reset when `GatewayLogin` returns the hub's Cherokee `500 Internal Server Error` page. The integration now calls `AdminLogout` and `GatewayLogout` and retries login once, which recovers hubs that get stuck with a stale local CGI session.
+
 ### 0.1.7
 
 - Fixed room-level open and close commands for hubs where Norman's `fullopen`/`fullclose` room command reports success but does not move every shutter. Room entities now send the same group/level commands used by the panel entities, using discovered group levels and panel model values.

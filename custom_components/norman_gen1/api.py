@@ -117,7 +117,17 @@ class NormanGen1Api:
 
     async def login(self) -> dict[str, Any]:
         payload = {"password": self.password, "app_version": self.app_version}
-        data, headers = await self._post("GatewayLogin", payload, require_session=False)
+        try:
+            data, headers = await self._post("GatewayLogin", payload, require_session=False)
+        except CannotConnect as err:
+            if not _is_gateway_login_server_error(err):
+                raise
+            _LOGGER.warning(
+                "GatewayLogin returned HTTP 500 from Norman hub %s; forcing logout endpoints before retrying once",
+                self.host,
+            )
+            await self.logout(force=True)
+            data, headers = await self._post("GatewayLogin", payload, require_session=False)
         if "errorCode" in data:
             if data.get("errorCode") == -13:
                 raise InvalidAuth("Hub rejected the password")
@@ -132,14 +142,15 @@ class NormanGen1Api:
         self.hub_info = data
         return data
 
-    async def logout(self) -> None:
-        if not self._session_cookie:
+    async def logout(self, *, force: bool = False) -> None:
+        if not force and not self._session_cookie:
             return
         try:
-            await self._post("AdminLogout", {}, auto_login=False)
-            await self._post("GatewayLogout", {}, auto_login=False)
-        except NormanGen1Error:
-            _LOGGER.debug("Ignoring logout failure", exc_info=True)
+            for endpoint in ("AdminLogout", "GatewayLogout"):
+                try:
+                    await self._post(endpoint, {}, auto_login=False)
+                except NormanGen1Error:
+                    _LOGGER.debug("Ignoring %s failure", endpoint, exc_info=True)
         finally:
             self._session_cookie = None
 
@@ -315,6 +326,10 @@ def _is_success_value(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"ok", "success", "true"}
     return False
+
+
+def _is_gateway_login_server_error(err: CannotConnect) -> bool:
+    return str(err).startswith("GatewayLogin returned HTTP 500")
 
 
 def remember_open_position(current: int | None, candidate: int | None) -> int | None:

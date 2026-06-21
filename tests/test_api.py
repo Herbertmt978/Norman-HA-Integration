@@ -41,6 +41,47 @@ class RecordingApi(NormanGen1Api):
         return {"errorCode": 0}
 
 
+class FakeResponse:
+    def __init__(
+        self,
+        *,
+        status: int,
+        text: str,
+        json_data: Any | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.status = status
+        self._text = text
+        self._json_data = json_data
+        self.headers = headers or {}
+
+    async def __aenter__(self) -> "FakeResponse":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    async def text(self) -> str:
+        return self._text
+
+    async def json(self, content_type: Any = None) -> Any:
+        if self._json_data is None:
+            raise ValueError("No JSON payload configured")
+        return self._json_data
+
+
+class FakeSession:
+    def __init__(self, responses: list[FakeResponse]) -> None:
+        self._responses = list(responses)
+        self.requests: list[dict[str, Any]] = []
+
+    def post(self, url: str, *, json: dict[str, Any], headers: dict[str, str], timeout: int) -> FakeResponse:
+        self.requests.append({"url": url, "json": json, "headers": headers, "timeout": timeout})
+        if not self._responses:
+            raise AssertionError("No fake response remaining")
+        return self._responses.pop(0)
+
+
 class TestRoomPositionControl(unittest.TestCase):
     def test_intermediate_position_is_remembered_as_open_target(self) -> None:
         self.assertEqual(remember_open_position(None, 37), 37)
@@ -129,6 +170,83 @@ class TestRoomPositionControl(unittest.TestCase):
 
         with self.assertRaises(CannotControl):
             asyncio.run(api.set_room_position(56548, [], 50))
+
+
+class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
+    async def test_login_forces_logout_and_retries_after_http_500(self) -> None:
+        session = FakeSession(
+            [
+                FakeResponse(
+                    status=500,
+                    text="<html><title>500 Internal Server Error</title></html>",
+                    headers={"Content-Type": "text/html"},
+                ),
+                FakeResponse(
+                    status=200,
+                    text='{ "status": "Success" }',
+                    json_data={"status": "Success"},
+                ),
+                FakeResponse(
+                    status=200,
+                    text='{ "status": "Success" }',
+                    json_data={"status": "Success"},
+                    headers={"Set-Cookie": "Session=0"},
+                ),
+                FakeResponse(
+                    status=200,
+                    text='{ "hubId": "MBAHUB_FAE224", "hubName": "home" }',
+                    json_data={"hubId": "MBAHUB_FAE224", "hubName": "home"},
+                    headers={"Set-Cookie": "Session=24680"},
+                ),
+            ]
+        )
+        api = NormanGen1Api(session, "192.0.2.10", "123456789")
+
+        info = await api.login()
+
+        self.assertEqual(info["hubName"], "home")
+        self.assertEqual(api._session_cookie, "Session=24680")
+        self.assertEqual(
+            [request["url"].rsplit("/", 1)[-1] for request in session.requests],
+            ["GatewayLogin", "AdminLogout", "GatewayLogout", "GatewayLogin"],
+        )
+        self.assertNotIn("Cookie", session.requests[1]["headers"])
+        self.assertNotIn("Cookie", session.requests[2]["headers"])
+
+    async def test_login_still_tries_gateway_logout_if_admin_logout_fails(self) -> None:
+        session = FakeSession(
+            [
+                FakeResponse(
+                    status=500,
+                    text="<html><title>500 Internal Server Error</title></html>",
+                    headers={"Content-Type": "text/html"},
+                ),
+                FakeResponse(
+                    status=500,
+                    text="<html><title>500 Internal Server Error</title></html>",
+                ),
+                FakeResponse(
+                    status=200,
+                    text='{ "status": "Success" }',
+                    json_data={"status": "Success"},
+                ),
+                FakeResponse(
+                    status=200,
+                    text='{ "hubId": "MBAHUB_FAE224", "hubName": "home" }',
+                    json_data={"hubId": "MBAHUB_FAE224", "hubName": "home"},
+                    headers={"Set-Cookie": "Session=24680"},
+                ),
+            ]
+        )
+        api = NormanGen1Api(session, "192.0.2.10", "123456789")
+
+        info = await api.login()
+
+        self.assertEqual(info["hubName"], "home")
+        self.assertEqual(
+            [request["url"].rsplit("/", 1)[-1] for request in session.requests],
+            ["GatewayLogin", "AdminLogout", "GatewayLogout", "GatewayLogin"],
+        )
 
 
 if __name__ == "__main__":
