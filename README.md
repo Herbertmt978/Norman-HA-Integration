@@ -149,6 +149,7 @@ Remove the config entry from **Settings → Devices & services**. Home Assistant
 - **Command not confirmed:** check hub RF range, motor battery, and pairing. A handheld remote can work even when the hub's pairing or range is wrong.
 - **Wrong direction:** use the per-room or per-panel movement-profile options.
 - **Official app stops working while Home Assistant polls:** update to the latest integration version; all transactions now log out and are serialized.
+- **HACS icon is unavailable:** Home Assistant 2026.3 or newer can serve the bundled custom-integration brand images locally. Restart Home Assistant after installing or updating the integration, then refresh the browser. HACS versions that still use the public Brands service may continue to show a placeholder; this does not affect the integration itself.
 
 ## Known limitations
 
@@ -174,6 +175,12 @@ Real Home Assistant tests use `requirements_ha_minimum.txt` or `requirements_ha_
 An eventual Home Assistant Core submission will also require extracting the protocol client into a typed asynchronous PyPI package, adding the Core-specific manifest/quality-scale files, and preparing separate documentation and brands pull requests. The integration code and behavioral tests are structured to make that extraction mechanical rather than architectural.
 
 ## Changelog
+
+### 0.2.1
+
+- Fixed the post-upgrade `GatewayLogin` HTTP 500 regression by carrying hub-issued session cookies through the forced logout and single login retry.
+- Added real HTTP regression coverage for cookies returned with the 500 response, logout transition cookies, and identical cookie values reissued during logout.
+- Added a validation guard for the bundled local icon and logo and documented Home Assistant and HACS branding compatibility.
 
 ### 0.2.0
 

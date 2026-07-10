@@ -152,6 +152,7 @@ class NormanGen1Api:
         self.password = password
         self.app_version = app_version
         self._session_cookie: str | None = None
+        self._session_cookie_generation = 0
         self._transaction_lock = transaction_lock or asyncio.Lock()
         self._expected_hub_id = expected_hub_id
         self.hub_info: dict[str, Any] = {}
@@ -200,8 +201,13 @@ class NormanGen1Api:
                 "GatewayLogin returned HTTP 500 from Norman hub %s; forcing logout endpoints before retrying once",
                 self.host,
             )
-            await self.logout(force=True)
-            data = await self._post("GatewayLogin", payload, require_session=False)
+            transition_cookie = await self.logout(force=True)
+            data = await self._post(
+                "GatewayLogin",
+                payload,
+                require_session=False,
+                request_cookie=transition_cookie,
+            )
         if "errorCode" in data:
             error_code = _as_int(data.get("errorCode"))
             if error_code is None or error_code != 0:
@@ -226,10 +232,11 @@ class NormanGen1Api:
         self.hub_info = normalized_info
         return normalized_info
 
-    async def logout(self, *, force: bool = False) -> None:
-        """Best-effort logout of the current low-level session."""
+    async def logout(self, *, force: bool = False) -> str | None:
+        """Log out best-effort and return a new hub transition cookie, if any."""
         if not force and not self._session_cookie:
-            return
+            return None
+        initial_cookie_generation = self._session_cookie_generation
         try:
             for endpoint in ("AdminLogout", "GatewayLogout"):
                 try:
@@ -237,7 +244,13 @@ class NormanGen1Api:
                 except NormanGen1Error:
                     _LOGGER.debug("Ignoring %s failure", endpoint, exc_info=True)
         finally:
+            transition_cookie = (
+                self._session_cookie
+                if self._session_cookie_generation != initial_cookie_generation
+                else None
+            )
             self._session_cookie = None
+        return transition_cookie
 
     async def async_close(self) -> None:
         """Wait for any active transaction, then close the hub session."""
@@ -366,6 +379,7 @@ class NormanGen1Api:
         require_session: bool = True,
         auto_login: bool = True,
         allow_error_response: bool = False,
+        request_cookie: str | None = None,
     ) -> dict[str, Any]:
         if require_session and auto_login and not self._session_cookie:
             await self.login()
@@ -375,7 +389,9 @@ class NormanGen1Api:
             "Content-Type": "application/json",
             "User-Agent": f"SmartShutterControl/103 HomeAssistant NormanGen1/{self.app_version}",
         }
-        if require_session and self._session_cookie:
+        if request_cookie is not None:
+            headers["Cookie"] = request_cookie
+        elif require_session and self._session_cookie:
             headers["Cookie"] = self._session_cookie
         url = f"{self.base_url}/{endpoint}"
         try:
@@ -386,6 +402,9 @@ class NormanGen1Api:
                 timeout=REQUEST_TIMEOUT,
                 allow_redirects=False,
             ) as response:
+                if session_cookie := _session_cookie_from_headers(response.headers):
+                    self._session_cookie = session_cookie
+                    self._session_cookie_generation += 1
                 if response.status in (401, 403):
                     if require_session:
                         raise InvalidSession(
@@ -394,8 +413,6 @@ class NormanGen1Api:
                     raise InvalidAuth("Hub rejected the password")
                 if response.status != 200:
                     raise CannotConnect(f"{endpoint} returned HTTP {response.status}")
-                if session_cookie := _session_cookie_from_headers(response.headers):
-                    self._session_cookie = session_cookie
                 try:
                     data = await response.json(content_type=None)
                 except Exception as err:

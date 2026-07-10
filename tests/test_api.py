@@ -189,6 +189,125 @@ class TestRoomPositionControl(unittest.TestCase):
 
 
 class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
+    async def test_login_uses_error_response_cookie_to_clear_stale_session(
+        self,
+    ) -> None:
+        stale_session = True
+        requests: list[tuple[str, str | None]] = []
+
+        async def gateway_login(request: web.Request) -> web.Response:
+            requests.append(("GatewayLogin", request.headers.get("Cookie")))
+            if stale_session:
+                return web.Response(
+                    status=500,
+                    text="<html><title>500 Internal Server Error</title></html>",
+                    headers={"Set-Cookie": "Session=stale; Path=/"},
+                )
+            return web.json_response(
+                {"hubId": "MBAHUB_FAE224", "hubName": "home"},
+                headers={"Set-Cookie": "Session=fresh; Path=/"},
+            )
+
+        async def logout(request: web.Request) -> web.Response:
+            nonlocal stale_session
+            endpoint = request.match_info["endpoint"]
+            cookie = request.headers.get("Cookie")
+            requests.append((endpoint, cookie))
+            if cookie == "Session=stale":
+                stale_session = False
+            return web.json_response({"status": "Success"})
+
+        app = web.Application()
+        app.router.add_post("/cgi-bin/cgi/GatewayLogin", gateway_login)
+        app.router.add_post("/cgi-bin/cgi/{endpoint:AdminLogout|GatewayLogout}", logout)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            async with aiohttp.ClientSession(
+                cookie_jar=aiohttp.DummyCookieJar()
+            ) as session:
+                api = NormanGen1Api(
+                    session,
+                    f"{server.host}:{server.port}",
+                    "123456789",
+                )
+
+                info = await api.login()
+        finally:
+            await server.close()
+
+        self.assertEqual(info["hubName"], "home")
+        self.assertEqual(api._session_cookie, "Session=fresh")
+        self.assertEqual(
+            requests,
+            [
+                ("GatewayLogin", None),
+                ("AdminLogout", "Session=stale"),
+                ("GatewayLogout", "Session=stale"),
+                ("GatewayLogin", None),
+            ],
+        )
+
+    async def test_login_uses_reissued_logout_cookie_for_stale_session_retry(
+        self,
+    ) -> None:
+        requests: list[tuple[str, str | None]] = []
+
+        async def gateway_login(request: web.Request) -> web.Response:
+            cookie = request.headers.get("Cookie")
+            requests.append(("GatewayLogin", cookie))
+            if cookie != "Session=0":
+                return web.Response(
+                    status=500,
+                    text="<html><title>500 Internal Server Error</title></html>",
+                    headers={"Set-Cookie": "Session=0; Path=/"},
+                )
+            return web.json_response(
+                {"hubId": "MBAHUB_FAE224", "hubName": "home"},
+                headers={"Set-Cookie": "Session=fresh; Path=/"},
+            )
+
+        async def logout(request: web.Request) -> web.Response:
+            endpoint = request.match_info["endpoint"]
+            requests.append((endpoint, request.headers.get("Cookie")))
+            headers = (
+                {"Set-Cookie": "Session=0; Path=/"}
+                if endpoint == "GatewayLogout"
+                else None
+            )
+            return web.json_response({"status": "Success"}, headers=headers)
+
+        app = web.Application()
+        app.router.add_post("/cgi-bin/cgi/GatewayLogin", gateway_login)
+        app.router.add_post("/cgi-bin/cgi/{endpoint:AdminLogout|GatewayLogout}", logout)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            async with aiohttp.ClientSession(
+                cookie_jar=aiohttp.DummyCookieJar()
+            ) as session:
+                api = NormanGen1Api(
+                    session,
+                    f"{server.host}:{server.port}",
+                    "123456789",
+                )
+
+                info = await api.login()
+        finally:
+            await server.close()
+
+        self.assertEqual(info["hubName"], "home")
+        self.assertEqual(api._session_cookie, "Session=fresh")
+        self.assertEqual(
+            requests,
+            [
+                ("GatewayLogin", None),
+                ("AdminLogout", "Session=0"),
+                ("GatewayLogout", "Session=0"),
+                ("GatewayLogin", "Session=0"),
+            ],
+        )
+
     async def test_login_forces_logout_and_retries_after_http_500(self) -> None:
         session = FakeSession(
             [
