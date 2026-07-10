@@ -60,6 +60,7 @@ helpers.update_coordinator = update_coordinator
 
 class Platform(StrEnum):
     COVER = "cover"
+    SENSOR = "sensor"
 
 
 const.CONF_HOST = "host"
@@ -172,18 +173,33 @@ class ConfigFlow:
 class OptionsFlow:
     """Minimal options flow result helpers."""
 
-    def async_create_entry(self, *, title: str, data: dict[str, Any]) -> dict[str, Any]:
+    def async_create_entry(
+        self, *, title: str = "", data: dict[str, Any]
+    ) -> dict[str, Any]:
         return {"type": "create_entry", "title": title, "data": data}
 
     def async_show_form(
-        self, *, step_id: str, data_schema, errors=None
+        self, *, step_id: str, data_schema, errors=None, description_placeholders=None
     ) -> dict[str, Any]:
         return {
             "type": "form",
             "step_id": step_id,
             "data_schema": data_schema,
             "errors": errors or {},
+            "description_placeholders": description_placeholders,
         }
+
+    def async_show_menu(
+        self, *, step_id: str, menu_options: list[str]
+    ) -> dict[str, Any]:
+        return {
+            "type": "menu",
+            "step_id": step_id,
+            "menu_options": menu_options,
+        }
+
+    def async_abort(self, *, reason: str) -> dict[str, Any]:
+        return {"type": "abort", "reason": reason}
 
 
 config_entries.ConfigEntry = ConfigEntry
@@ -392,3 +408,68 @@ class TextSelector:
 selector.TextSelector = TextSelector
 selector.TextSelectorConfig = TextSelectorConfig
 selector.TextSelectorType = TextSelectorType
+
+
+class NumberSelectorMode(StrEnum):
+    BOX = "box"
+
+
+class SelectSelectorMode(StrEnum):
+    DROPDOWN = "dropdown"
+
+
+class NumberSelectorConfig(dict):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(kwargs)
+
+
+class SelectSelectorConfig(dict):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(kwargs)
+
+
+class SelectOptionDict(dict):
+    def __init__(self, *, value: str, label: str) -> None:
+        super().__init__(value=value, label=label)
+
+
+class NumberSelector:
+    def __init__(self, config: NumberSelectorConfig) -> None:
+        self.config = config
+
+    def __call__(self, value: Any) -> int | float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("expected number")
+        return value
+
+
+class SelectSelector:
+    def __init__(self, config: SelectSelectorConfig) -> None:
+        self.config = config
+
+    def __call__(self, value: Any) -> str:
+        value = str(value)
+        allowed = {
+            str(option.get("value")) if isinstance(option, dict) else str(option)
+            for option in self.config["options"]
+        }
+        if value not in allowed:
+            raise ValueError("unknown option")
+        return value
+
+
+class BooleanSelector:
+    def __call__(self, value: Any) -> bool:
+        if not isinstance(value, bool):
+            raise ValueError("expected bool")
+        return value
+
+
+selector.BooleanSelector = BooleanSelector
+selector.NumberSelector = NumberSelector
+selector.NumberSelectorConfig = NumberSelectorConfig
+selector.NumberSelectorMode = NumberSelectorMode
+selector.SelectOptionDict = SelectOptionDict
+selector.SelectSelector = SelectSelector
+selector.SelectSelectorConfig = SelectSelectorConfig
+selector.SelectSelectorMode = SelectSelectorMode

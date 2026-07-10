@@ -26,22 +26,13 @@ from .api import (
     NormanRoom,
     PositionProfile,
     UnexpectedHub,
-    group_target_id,
     hub_position_to_ha,
     position_is_closed,
-    resolve_position_profile,
-    room_target_id,
-    target_override_enabled,
 )
-from .const import (
-    COMMAND_SETTLE_SECONDS,
-    CONF_KNOWN_TARGETS,
-    CONF_REVERSED_CLOSE_TARGETS,
-    CONF_TILT_OPEN_TARGETS,
-    DOMAIN,
-)
+from .const import COMMAND_SETTLE_SECONDS, DOMAIN
 from .coordinator import NormanDataUpdateCoordinator
 from .device import room_device_info
+from .profiles import resolve_configured_profile
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,10 +81,10 @@ class NormanBaseCover(CoordinatorEntity[NormanDataUpdateCoordinator], CoverEntit
 
     @property
     def _position_profile(self) -> PositionProfile:
-        return resolve_position_profile(
-            self._current_room.raw,
-            use_tilt_open=self._target_option_enabled(CONF_TILT_OPEN_TARGETS),
-            use_reversed_close=self._target_option_enabled(CONF_REVERSED_CLOSE_TARGETS),
+        return resolve_configured_profile(
+            self.entry.options,
+            self.room.id,
+            self._option_level,
         )
 
     @property
@@ -101,12 +92,12 @@ class NormanBaseCover(CoordinatorEntity[NormanDataUpdateCoordinator], CoverEntit
         """Return a Home Assistant position normalized from raw hub positions."""
         if self._optimistic_position is not None:
             return self._optimistic_position
-        hub_positions = self._hub_positions()
-        if not hub_positions or any(position is None for position in hub_positions):
+        samples = self._hub_position_samples()
+        if not samples or any(position is None for position, _profile in samples):
             return None
         positions = [
-            hub_position_to_ha(position, self._position_profile)
-            for position in hub_positions
+            hub_position_to_ha(position, profile)
+            for position, profile in samples
             if position is not None
         ]
         if any(position is None for position in positions):
@@ -121,17 +112,16 @@ class NormanBaseCover(CoordinatorEntity[NormanDataUpdateCoordinator], CoverEntit
         """Return whether all known shutters are physically closed."""
         if self._optimistic_position is not None:
             return self._optimistic_position <= 0
-        positions = self._hub_positions()
-        if not positions or any(position is None for position in positions):
+        samples = self._hub_position_samples()
+        if not samples or any(position is None for position, _profile in samples):
             return None
-        profile = self._position_profile
         return all(
             position_is_closed(
                 position,
                 profile.close_position,
                 closes_at_both_ends=profile.closes_at_both_ends,
             )
-            for position in positions
+            for position, profile in samples
             if position is not None
         )
 
@@ -230,22 +220,7 @@ class NormanBaseCover(CoordinatorEntity[NormanDataUpdateCoordinator], CoverEntit
     def _hub_positions(self) -> list[int | None]:
         raise NotImplementedError
 
-    def _target_option_enabled(self, option_name: str) -> bool | None:
-        if option_name not in self.entry.options:
-            return None
-        if target_override_enabled(
-            self.entry.options.get(option_name, []),
-            self.room.id,
-            self._option_level,
-        ):
-            return True
-        known_targets = self.entry.options.get(CONF_KNOWN_TARGETS)
-        if known_targets is None:
-            return False
-        target_id = (
-            room_target_id(self.room.id)
-            if self._option_level is None
-            else group_target_id(self.room.id, self._option_level)
-        )
-        room_id = room_target_id(self.room.id)
-        return False if target_id in known_targets or room_id in known_targets else None
+    def _hub_position_samples(self) -> list[tuple[int | None, PositionProfile]]:
+        """Pair raw positions with the profile that normalizes each one."""
+        profile = self._position_profile
+        return [(position, profile) for position in self._hub_positions()]

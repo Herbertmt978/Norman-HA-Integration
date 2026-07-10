@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 import logging
+import math
 from typing import Any, cast
 from urllib.parse import urlsplit
 
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PASSWORD
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
-import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 
 from .api import (
@@ -25,27 +25,54 @@ from .api import (
     NormanGen1Api,
     NormanRoom,
     NormanWindow,
+    PositionProfile,
     group_target_id,
-    room_close_position,
-    room_open_position,
     room_target_id,
 )
 from .const import (
     CONF_APP_VERSION,
-    CONF_KNOWN_TARGETS,
+    CONF_CLOSE_POSITION,
+    CONF_DEFAULT_CLOSE_POSITION,
+    CONF_DEFAULT_OPEN_POSITION,
+    CONF_INHERIT,
+    CONF_LEGACY_PROFILE_MIGRATION,
+    CONF_OPEN_POSITION,
+    CONF_POSITION_PROFILES,
     CONF_REVERSED_CLOSE_TARGETS,
+    CONF_TARGET,
     CONF_TILT_OPEN_TARGETS,
     DEFAULT_APP_VERSION,
     DEFAULT_PASSWORD,
     DOMAIN,
 )
 from .helpers import clean_label, group_name
+from .profiles import (
+    make_position_profile,
+    profile_as_options,
+    resolve_configured_profile,
+    resolve_default_profile,
+    stored_position_profiles,
+)
 from .session import async_create_norman_session
 
 _LOGGER = logging.getLogger(__name__)
 
 PASSWORD_SELECTOR = selector.TextSelector(
     selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+)
+POSITION_SELECTOR = selector.NumberSelector(
+    selector.NumberSelectorConfig(
+        min=0,
+        max=100,
+        step=1,
+        mode=selector.NumberSelectorMode.BOX,
+    )
+)
+CLOSE_POSITION_SELECTOR = selector.SelectSelector(
+    selector.SelectSelectorConfig(
+        options=["0", "100"],
+        mode=selector.SelectSelectorMode.DROPDOWN,
+    )
 )
 
 
@@ -98,9 +125,10 @@ async def _fetch_validation_snapshot(
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Norman Gen 1 Hub."""
 
-    VERSION = 1
+    VERSION = 2
 
     @staticmethod
+    @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
@@ -287,45 +315,168 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle Norman Gen 1 options."""
 
+    _selected_target: str | None = None
+    _selected_target_name: str | None = None
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Configure per-room and per-panel shutter movement profiles."""
+        """Choose which movement-profile settings to edit."""
         entry = self._entry
-        choices, tilt_defaults, reversed_defaults = _target_choices(self.hass, entry)
+        if entry.version < 2 or any(
+            key in entry.options
+            for key in (
+                CONF_LEGACY_PROFILE_MIGRATION,
+                CONF_TILT_OPEN_TARGETS,
+                CONF_REVERSED_CLOSE_TARGETS,
+            )
+        ):
+            return self.async_abort(reason="migration_pending")
+
+        menu_options = ["defaults"]
+        if _target_choices(entry):
+            menu_options.append("target")
+        return self.async_show_menu(step_id="init", menu_options=menu_options)
+
+    async def async_step_defaults(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit the global raw Open and Closed positions."""
+        errors: dict[str, str] = {}
+        current = resolve_default_profile(self._entry.options)
+        open_default: float = current.open_position
+        close_default = str(current.close_position)
 
         if user_input is not None:
-            return self.async_create_entry(
-                title="",
-                data={
-                    CONF_TILT_OPEN_TARGETS: list(
-                        user_input.get(CONF_TILT_OPEN_TARGETS, [])
-                    ),
-                    CONF_REVERSED_CLOSE_TARGETS: list(
-                        user_input.get(CONF_REVERSED_CLOSE_TARGETS, [])
-                    ),
-                    CONF_KNOWN_TARGETS: sorted(choices),
-                },
+            open_default = user_input[CONF_DEFAULT_OPEN_POSITION]
+            close_default = str(user_input[CONF_DEFAULT_CLOSE_POSITION])
+            open_position = _whole_position(open_default)
+            if open_position is None:
+                errors[CONF_DEFAULT_OPEN_POSITION] = "whole_number"
+            else:
+                close_position = int(close_default)
+                try:
+                    profile = make_position_profile(open_position, close_position)
+                except ValueError:
+                    errors["base"] = (
+                        "positions_must_differ"
+                        if open_position == close_position
+                        else "invalid_position"
+                    )
+                else:
+                    options = dict(self._entry.options)
+                    options[CONF_DEFAULT_OPEN_POSITION] = profile.open_position
+                    options[CONF_DEFAULT_CLOSE_POSITION] = profile.close_position
+                    options[CONF_POSITION_PROFILES] = stored_position_profiles(options)
+                    return self.async_create_entry(data=options)
+
+        return self.async_show_form(
+            step_id="defaults",
+            data_schema=_profile_schema(
+                open_key=CONF_DEFAULT_OPEN_POSITION,
+                close_key=CONF_DEFAULT_CLOSE_POSITION,
+                open_default=open_default,
+                close_default=close_default,
+            ),
+            errors=errors,
+        )
+
+    async def async_step_target(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Select a discovered or stored room/panel target."""
+        choices = _target_choices(self._entry)
+        if not choices:
+            return self.async_abort(reason="no_targets")
+        if user_input is not None:
+            target = str(user_input[CONF_TARGET])
+            self._selected_target = target
+            self._selected_target_name = choices[target]
+            return await self.async_step_profile()
+
+        return self.async_show_form(
+            step_id="target",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_TARGET): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(value=value, label=label)
+                                for value, label in choices.items()
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    )
+                }
+            ),
+        )
+
+    async def async_step_profile(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Edit or inherit the selected room/panel profile."""
+        target = cast(str, self._selected_target)
+        options = self._entry.options
+        profiles = stored_position_profiles(options)
+        exact_profile = profiles.get(target)
+        inherited_profile = _inherited_profile(options, target)
+        current = (
+            make_position_profile(
+                exact_profile[CONF_OPEN_POSITION],
+                exact_profile[CONF_CLOSE_POSITION],
             )
-
-        tilt_targets = entry.options.get(CONF_TILT_OPEN_TARGETS, tilt_defaults)
-        reversed_targets = entry.options.get(
-            CONF_REVERSED_CLOSE_TARGETS, reversed_defaults
+            if exact_profile is not None
+            else inherited_profile
         )
-        _add_unknown_targets(choices, tilt_targets)
-        _add_unknown_targets(choices, reversed_targets)
+        inherit_default = exact_profile is None
+        open_default: float = current.open_position
+        close_default = str(current.close_position)
+        errors: dict[str, str] = {}
 
-        schema = vol.Schema(
-            {
-                vol.Optional(
-                    CONF_TILT_OPEN_TARGETS, default=list(tilt_targets)
-                ): cv.multi_select(choices),
-                vol.Optional(
-                    CONF_REVERSED_CLOSE_TARGETS, default=list(reversed_targets)
-                ): cv.multi_select(choices),
-            }
+        if user_input is not None:
+            inherit_default = bool(user_input[CONF_INHERIT])
+            open_default = user_input[CONF_OPEN_POSITION]
+            close_default = str(user_input[CONF_CLOSE_POSITION])
+            if inherit_default:
+                profiles.pop(target, None)
+                updated = dict(options)
+                updated[CONF_POSITION_PROFILES] = profiles
+                return self.async_create_entry(data=updated)
+
+            open_position = _whole_position(open_default)
+            if open_position is None:
+                errors[CONF_OPEN_POSITION] = "whole_number"
+            else:
+                close_position = int(close_default)
+                try:
+                    profile = make_position_profile(open_position, close_position)
+                except ValueError:
+                    errors["base"] = (
+                        "positions_must_differ"
+                        if open_position == close_position
+                        else "invalid_position"
+                    )
+                else:
+                    profiles[target] = profile_as_options(profile)
+                    updated = dict(options)
+                    updated[CONF_POSITION_PROFILES] = profiles
+                    return self.async_create_entry(data=updated)
+
+        schema = _profile_schema(
+            open_key=CONF_OPEN_POSITION,
+            close_key=CONF_CLOSE_POSITION,
+            open_default=open_default,
+            close_default=close_default,
+            inherit_default=inherit_default,
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(
+            step_id="profile",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "target_name": self._selected_target_name or target,
+            },
+        )
 
     @property
     def _entry(self) -> config_entries.ConfigEntry:
@@ -336,40 +487,75 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         )
 
 
-def _target_choices(
-    hass: HomeAssistant,
-    entry: config_entries.ConfigEntry,
-) -> tuple[dict[str, str], list[str], list[str]]:
+def _target_choices(entry: config_entries.ConfigEntry) -> dict[str, str]:
     coordinator = getattr(entry, "runtime_data", None)
-    if coordinator is None or coordinator.data is None:
-        return {}, [], []
-
-    rooms: list[NormanRoom] = coordinator.data.rooms
-    levels_by_room: dict[int, list[int]] = coordinator.data.levels_by_room
     choices: dict[str, str] = {}
-    tilt_defaults: list[str] = []
-    reversed_defaults: list[str] = []
-
-    for room in sorted(rooms, key=lambda item: clean_label(item.name)):
-        room_label = clean_label(room.name)
-        room_key = room_target_id(room.id)
-        choices[room_key] = f"{room_label} (room)"
-        if room_open_position(room.raw) == 37:
-            tilt_defaults.append(room_key)
-        if room_close_position(room.raw) == 100:
-            reversed_defaults.append(room_key)
-
-        for level in levels_by_room.get(room.id, []):
+    if coordinator is not None and coordinator.data is not None:
+        rooms: list[NormanRoom] = coordinator.data.rooms
+        levels_by_room: dict[int, list[int]] = coordinator.data.levels_by_room
+        for room in sorted(rooms, key=lambda item: clean_label(item.name)):
+            room_label = clean_label(room.name)
+            choices[room_target_id(room.id)] = room_label
             levels = levels_by_room.get(room.id, [])
-            group_label = clean_label(group_name(room.group_names, level, levels))
-            choices[group_target_id(room.id, level)] = f"{room_label} - {group_label}"
+            for level in levels:
+                group_label = clean_label(group_name(room.group_names, level, levels))
+                choices[group_target_id(room.id, level)] = (
+                    f"{room_label} / {group_label}"
+                )
 
-    return choices, tilt_defaults, reversed_defaults
+    for target in stored_position_profiles(entry.options):
+        choices.setdefault(target, target)
+    return choices
 
 
-def _add_unknown_targets(choices: dict[str, str], targets: Iterable[str]) -> None:
-    for target in targets:
-        choices.setdefault(str(target), f"{target} (not currently discovered)")
+def _profile_schema(
+    *,
+    open_key: str,
+    close_key: str,
+    open_default: float,
+    close_default: str,
+    inherit_default: bool | None = None,
+) -> vol.Schema:
+    fields: dict[vol.Marker, Any] = {}
+    if inherit_default is not None:
+        fields[vol.Required(CONF_INHERIT, default=inherit_default)] = (
+            selector.BooleanSelector()
+        )
+    fields[vol.Required(open_key, default=open_default)] = POSITION_SELECTOR
+    fields[vol.Required(close_key, default=close_default)] = CLOSE_POSITION_SELECTOR
+    return vol.Schema(fields)
+
+
+def _whole_position(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(cast(Any, value))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric) or not numeric.is_integer():
+        return None
+    position = int(numeric)
+    return position if 0 <= position <= 100 else None
+
+
+def _inherited_profile(options: Mapping[str, Any], target: str) -> PositionProfile:
+    profiles = stored_position_profiles(options)
+    profiles.pop(target, None)
+    inherited_options = {**options, CONF_POSITION_PROFILES: profiles}
+    parts = target.split(":")
+    try:
+        if len(parts) == 2 and parts[0] == "room":
+            return resolve_configured_profile(inherited_options, int(parts[1]))
+        if len(parts) == 3 and parts[0] == "group":
+            return resolve_configured_profile(
+                inherited_options,
+                int(parts[1]),
+                int(parts[2]),
+            )
+    except ValueError:
+        pass
+    return resolve_default_profile(inherited_options)
 
 
 async def _validate_for_flow(

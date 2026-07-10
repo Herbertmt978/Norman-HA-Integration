@@ -9,10 +9,10 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from .api import NormanGen1Api, group_target_id, room_target_id
+from .api import NormanGen1Api
 from .const import (
     CONF_APP_VERSION,
-    CONF_KNOWN_TARGETS,
+    CONF_LEGACY_PROFILE_MIGRATION,
     CONF_REVERSED_CLOSE_TARGETS,
     CONF_TILT_OPEN_TARGETS,
     DEFAULT_APP_VERSION,
@@ -21,6 +21,7 @@ from .const import (
 )
 from .coordinator import NormanConfigEntry, NormanDataUpdateCoordinator
 from .device import hub_device_info
+from .profiles import migrate_legacy_profile_options
 from .session import async_create_norman_session
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: NormanConfigEntry) -> bo
         await _async_migrate_registry_identity(hass, entry, host, api.hub_id)
         hass.config_entries.async_update_entry(entry, unique_id=api.hub_id)
     api.pin_hub_id(api.hub_id)
-    _migrate_legacy_options(hass, entry, coordinator)
+    _migrate_profile_options(hass, entry, coordinator)
     dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,
         **hub_device_info(api),
@@ -86,29 +87,43 @@ async def async_unload_entry(hass: HomeAssistant, entry: NormanConfigEntry) -> b
     return unload_ok
 
 
+async def async_migrate_entry(
+    hass: HomeAssistant,
+    entry: NormanConfigEntry,
+) -> bool:
+    """Mark v0.2 entries for profile migration after hub discovery."""
+    if entry.version == 1:
+        hass.config_entries.async_update_entry(
+            entry,
+            version=2,
+            options={
+                **entry.options,
+                CONF_LEGACY_PROFILE_MIGRATION: True,
+            },
+        )
+    return True
+
+
 @callback
-def _migrate_legacy_options(
+def _migrate_profile_options(
     hass: HomeAssistant,
     entry: NormanConfigEntry,
     coordinator: NormanDataUpdateCoordinator,
 ) -> None:
-    """Snapshot targets from pre-0.2 options before dynamic discovery begins."""
-    if CONF_KNOWN_TARGETS in entry.options or not any(
-        key in entry.options
-        for key in (CONF_TILT_OPEN_TARGETS, CONF_REVERSED_CLOSE_TARGETS)
-    ):
-        return
-
-    known_targets = {room_target_id(room.id) for room in coordinator.data.rooms}
-    known_targets.update(
-        group_target_id(room_id, level)
-        for room_id, levels in coordinator.data.levels_by_room.items()
-        for level in levels
+    """Initialize numeric options or preserve a v0.2 entry's exact profile."""
+    options = dict(entry.options)
+    needs_legacy_migration = options.pop(
+        CONF_LEGACY_PROFILE_MIGRATION, False
+    ) is True or any(
+        key in options for key in (CONF_TILT_OPEN_TARGETS, CONF_REVERSED_CLOSE_TARGETS)
     )
-    hass.config_entries.async_update_entry(
-        entry,
-        options={**entry.options, CONF_KNOWN_TARGETS: sorted(known_targets)},
+    migrated = migrate_legacy_profile_options(
+        options,
+        coordinator.data.rooms if needs_legacy_migration else [],
+        coordinator.data.levels_by_room if needs_legacy_migration else {},
     )
+    if migrated != entry.options:
+        hass.config_entries.async_update_entry(entry, options=migrated)
 
 
 async def _async_migrate_registry_identity(
@@ -119,17 +134,34 @@ async def _async_migrate_registry_identity(
 ) -> None:
     """Preserve legacy entity IDs and devices while learning a stable hub ID."""
     device_registry = dr.async_get(hass)
-    old_identifier = (DOMAIN, old_hub_id)
+    old_room_prefix = f"{old_hub_id}_room_"
     for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
-        if old_identifier not in device.identifiers:
+        identifiers = set(device.identifiers)
+        migrated_identifiers: set[tuple[str, str]] = set()
+        changed = False
+        for domain, identifier in identifiers:
+            if domain != DOMAIN:
+                migrated_identifiers.add((domain, identifier))
+                continue
+            if identifier == old_hub_id:
+                migrated_identifiers.add((DOMAIN, new_hub_id))
+                changed = True
+                continue
+            if identifier.startswith(old_room_prefix):
+                migrated_identifiers.add(
+                    (DOMAIN, f"{new_hub_id}{identifier[len(old_hub_id) :]}")
+                )
+                changed = True
+                continue
+            migrated_identifiers.add((domain, identifier))
+        if not changed:
             continue
         device_registry.async_update_device(
             device.id,
-            new_identifiers=(device.identifiers - {old_identifier})
-            | {(DOMAIN, new_hub_id)},
+            new_identifiers=migrated_identifiers,
         )
 
-    old_prefix = f"{old_hub_id}_room_"
+    old_prefix = f"{old_hub_id}_"
 
     @callback
     def migrate_entity(entity: er.RegistryEntry) -> dict[str, str] | None:

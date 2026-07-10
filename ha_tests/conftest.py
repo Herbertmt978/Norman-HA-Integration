@@ -123,7 +123,9 @@ class MockNormanApiState:
         api.authenticated_session.side_effect = authenticated_session
         api.get_rooms = AsyncMock(side_effect=get_rooms)
         api.get_windows = AsyncMock(side_effect=get_windows)
-        api.set_room_position = AsyncMock(side_effect=control)
+        api.set_room_positions = AsyncMock(side_effect=control)
+        api.full_open_room = AsyncMock(side_effect=control)
+        api.full_close_room = AsyncMock(side_effect=control)
         api.set_group_position = AsyncMock(side_effect=control)
         api.async_close = AsyncMock()
         api.pin_hub_id.side_effect = pin_hub_id

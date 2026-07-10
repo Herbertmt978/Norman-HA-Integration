@@ -9,8 +9,11 @@ The Gen 1 protocol was inferred from local network traffic and verified against 
 - One child device for every room, linked to the physical hub device.
 - One room-wide `cover` as each room device's main control.
 - One `cover` for every discovered room group or plantation-shutter panel.
-- Open, close, and target-position control.
-- Safe position mapping for conventional and tilt-style shutters.
+- Native Open, Close, and target-position control with configurable raw targets.
+- Global, room, and panel movement profiles; new installs default to Open `37`
+  and Closed `100`.
+- One diagnostic battery-percentage sensor for every physical motor reported by
+  the hub.
 - Dynamic addition of rooms and panels discovered after setup.
 - Reauthentication, connection reconfiguration, translated errors, and privacy-safe diagnostics.
 - Local communication only; shutter control has no cloud dependency.
@@ -95,17 +98,20 @@ This radio is not Bluetooth. ESPHome Bluetooth proxies cannot observe or repeat 
 
 Home Assistant always exposes positions as `0%` closed to `100%` visually open. The hub's raw movement range is mapped onto that convention:
 
-| Shutter profile | Home Assistant closed | Home Assistant open |
+| Setting | New-install default | Allowed values |
 |---|---:|---:|
-| Conventional | Hub position `0` | Hub position `100` |
-| Tilt styles 2 and 3 | Hub position `0` | Visual-open position `37` |
-| Reversed tilt style 13 | Hub position `100` | Visual-open position `37` |
+| Open | Hub position `37` | Any whole number from `0` to `100` |
+| Closed | Hub position `100` | End stop `0` or `100` |
 
 For tilt shutters, either physical end stop can represent closed louvers. The integration does not learn an open target from a transient in-motion position.
 
-Open **Configure** on the integration to override the tilt-open or reversed-close profile for a room or individual panel. A room selection applies to its panels. Explicit choices are remembered, while a newly discovered room still receives its safe automatic profile.
+Open **Configure** on the integration to change the defaults or set an override for a room or individual panel. A panel inherits its room, and a room inherits the global defaults, unless that target is explicitly pinned. Open and Closed cannot use the same raw position.
 
-If a room has no usable panel levels, only room-wide commands that the hub can represent safely are exposed. In particular, a reversed `100` close target is never sent through the hub's `fullopen` fallback.
+Existing v0.2 installations are migrated to exact numeric profiles after the first successful discovery. Their current effective Open and Closed directions are retained; the 37/100 defaults apply to new installations and newly discovered targets. Existing cover unique IDs and automation targets are unchanged.
+
+The ordinary arrows on Home Assistant's device page are its native Open and Close controls, not one-point steps. The position slider remains available for other positions. A room Open or Close uses the hub's one room-wide broadcast when every panel target matches the hub-native room profile, so those motors start together. If panel overrides differ, the integration sends the exact configured group targets sequentially inside the same authenticated transaction rather than ignoring an override.
+
+If a room has no usable panel levels, only Open or Close commands that exactly match a safe hub-native room broadcast are exposed.
 
 ## Automations
 
@@ -130,11 +136,12 @@ Typical use cases include scheduled privacy positions, closing rooms when everyo
 
 - The hub is polled every 60 seconds.
 - Room metadata and shutter state are fetched in one serialized authenticated transaction.
+- Motor battery percentages come from that same `getWindowInfo` response. Battery sensors do not add a poll, login, cookie, or network request.
 - A rejected session is retried once with a fresh login.
 - A failed Cherokee CGI response is fully consumed before recovery starts, so recovery requests cannot overlap a still-running failed request.
 - Authentication failures start Home Assistant's reauthentication flow.
 - Communication, malformed-data, empty-snapshot, and hub-identity failures make entities unavailable without deleting their last known registry entries.
-- New rooms and groups are added dynamically after a successful poll.
+- New rooms, groups, and physical-motor battery sensors are added dynamically after a successful poll.
 - After a command, the requested state is shown optimistically for 10 seconds before a refresh.
 
 ## Reauthentication and reconfiguration
@@ -149,7 +156,7 @@ Downloaded diagnostics include normalized counts, positions, styles, movement op
 
 ## Removal
 
-Remove the config entry from **Settings → Devices & services**. Home Assistant unloads the cover platform, stops coordinator refreshes, waits for any active transaction, logs out, and releases the client. Remove the HACS repository separately if the integration is no longer required.
+Remove the config entry from **Settings → Devices & services**. Home Assistant unloads the cover and sensor platforms, stops coordinator refreshes, waits for any active transaction, logs out, and releases the client. Remove the HACS repository separately if the integration is no longer required.
 
 ## Troubleshooting
 
@@ -167,8 +174,9 @@ Remove the config entry from **Settings → Devices & services**. Home Assistant
 
 - Hardware testing is currently limited to one Gen 1 hub; payloads from other firmware and regional variants are welcome.
 - The hub can acknowledge a command even if a motor does not physically move.
-- Room-level positions are implemented by sending the target to every discovered group level.
+- A room-wide broadcast is available only when all configured panel targets match the hub-native command. Mixed or non-native profiles necessarily use exact sequential group commands.
 - A panel entity represents one commandable room level. Firmware may report multiple window records for the same level; those records remain one aggregate control.
+- Battery sensors represent the individual physical window/motor records and are attached to the existing room device so the room-grouped UI remains intact.
 - Direct proprietary RF or Bluetooth control is not provided; commands intentionally pass through the Norman hub and repeaters.
 - Entity display names are learned when entities are first created. Rename entities in Home Assistant if hub-side names later change.
 - Gen 2 compatibility is not claimed.
@@ -189,6 +197,15 @@ Real Home Assistant tests use `requirements_ha_minimum.txt` or `requirements_ha_
 An eventual Home Assistant Core submission will also require extracting the protocol client into a typed asynchronous PyPI package, adding the Core-specific manifest/quality-scale files, and preparing separate documentation and brands pull requests. The integration code and behavioral tests are structured to make that extraction mechanical rather than architectural.
 
 ## Changelog
+
+### 0.3.0
+
+- Added numeric Open and Closed settings with global defaults and sparse room or panel overrides. New installs use Open `37` and Closed `100`; Closed can be reversed to `0`.
+- Migrates every discovered v0.2 movement profile to equivalent numeric values without changing existing directions or cover unique IDs.
+- Uses the live-verified room-wide hub command when every target matches, so compatible room panels open or close together; mixed overrides retain exact per-panel control.
+- Maps aggregate room state through each panel's own profile and keeps the native Home Assistant position slider for arbitrary positions.
+- Added translated diagnostic battery sensors for physical motors using the existing 60-second snapshot, with no additional hub poll or login.
+- Added real Home Assistant tests for numeric option flows, migration, mixed-profile commands and state, semantic broadcasts, batteries, dynamic discovery, and minimum-version compatibility.
 
 ### 0.2.2
 

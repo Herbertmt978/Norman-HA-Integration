@@ -23,6 +23,13 @@ from custom_components.norman_gen1.api import (
     NormanRoom,
     NormanWindow,
 )
+from custom_components.norman_gen1.const import (
+    CONF_CLOSE_POSITION,
+    CONF_DEFAULT_CLOSE_POSITION,
+    CONF_DEFAULT_OPEN_POSITION,
+    CONF_OPEN_POSITION,
+    CONF_POSITION_PROFILES,
+)
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
@@ -75,15 +82,16 @@ async def test_group_commands_use_home_assistant_position_semantics(
     api.set_group_position.assert_awaited_once_with(1, 1, 0, 1)
 
 
-async def test_room_commands_use_discovered_levels_and_models(
+async def test_room_endpoints_use_one_simultaneous_semantic_broadcast(
     hass: HomeAssistant,
     setup_integration,
     mock_norman_api,
 ) -> None:
-    """Send room services through the discovered panel-level command path."""
+    """Use the hub's one room command when configured and native targets match."""
     entry = setup_integration
     entity_id = _entity_id(hass, entry.entry_id, "hub-1_room_1")
     api = entry.runtime_data.api
+    sessions_before = api.authenticated_session.call_count
 
     await hass.services.async_call(
         COVER_DOMAIN,
@@ -91,25 +99,223 @@ async def test_room_commands_use_discovered_levels_and_models(
         {ATTR_ENTITY_ID: entity_id},
         blocking=True,
     )
-    api.set_room_position.assert_awaited_once_with(1, [1], 100, {1: 1})
+    api.full_open_room.assert_awaited_once_with(1)
+    api.set_room_positions.assert_not_awaited()
+    assert api.authenticated_session.call_count == sessions_before + 1
 
-    api.set_room_position.reset_mock()
     await hass.services.async_call(
         COVER_DOMAIN,
         SERVICE_SET_COVER_POSITION,
         {ATTR_ENTITY_ID: entity_id, ATTR_POSITION: 25},
         blocking=True,
     )
-    api.set_room_position.assert_awaited_once_with(1, [1], 25, {1: 1})
+    api.set_room_positions.assert_awaited_once_with(1, {1: 25}, {1: 1})
 
-    api.set_room_position.reset_mock()
     await hass.services.async_call(
         COVER_DOMAIN,
         SERVICE_CLOSE_COVER,
         {ATTR_ENTITY_ID: entity_id},
         blocking=True,
     )
-    api.set_room_position.assert_awaited_once_with(1, [1], 0, {1: 1})
+    api.full_close_room.assert_awaited_once_with(1)
+
+
+async def test_style_13_defaults_broadcast_37_open_and_100_closed(
+    hass: HomeAssistant,
+    mock_config_entry,
+    mock_norman_api,
+) -> None:
+    """Match the live-tested 37/100 profile with simultaneous hub commands."""
+    hass.config_entries.async_update_entry(mock_config_entry, version=2)
+    mock_norman_api.rooms[0].raw = {"Style": 13}
+    mock_norman_api.windows[0].position = 37
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    entity_id = _entity_id(hass, mock_config_entry.entry_id, "hub-1_room_1")
+    api = mock_config_entry.runtime_data.api
+
+    await hass.services.async_call(
+        COVER_DOMAIN,
+        SERVICE_OPEN_COVER,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    await hass.services.async_call(
+        COVER_DOMAIN,
+        SERVICE_CLOSE_COVER,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+
+    api.full_open_room.assert_awaited_once_with(1)
+    api.full_close_room.assert_awaited_once_with(1)
+    api.set_room_positions.assert_not_awaited()
+
+
+async def test_mixed_panel_profiles_use_exact_fanout_and_per_panel_state(
+    hass: HomeAssistant,
+    mock_config_entry,
+    mock_norman_api,
+) -> None:
+    """Honor panel overrides when one semantic room command cannot represent them."""
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        version=2,
+        options={
+            CONF_DEFAULT_OPEN_POSITION: 37,
+            CONF_DEFAULT_CLOSE_POSITION: 100,
+            CONF_POSITION_PROFILES: {
+                "group:1:2": {
+                    CONF_OPEN_POSITION: 42,
+                    CONF_CLOSE_POSITION: 0,
+                }
+            },
+        },
+    )
+    mock_norman_api.rooms[0] = NormanRoom(
+        id=1,
+        name="Verified room",
+        group_names=["Left", "Right"],
+        raw={"Style": 13},
+    )
+    mock_norman_api.windows = [
+        NormanWindow(1, "Left", 1, 1, None, 37, 1, None, {}),
+        NormanWindow(2, "Right", 1, 2, None, 21, 2, None, {}),
+    ]
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    entity_id = _entity_id(hass, mock_config_entry.entry_id, "hub-1_room_1")
+    api = mock_config_entry.runtime_data.api
+    state = hass.states.get(entity_id)
+    assert state.attributes[ATTR_CURRENT_POSITION] == 75
+
+    await hass.services.async_call(
+        COVER_DOMAIN,
+        SERVICE_OPEN_COVER,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    api.set_room_positions.assert_awaited_once_with(
+        1,
+        {1: 37, 2: 42},
+        {1: 1, 2: 2},
+    )
+    api.full_open_room.assert_not_awaited()
+
+    api.set_room_positions.reset_mock()
+    await hass.services.async_call(
+        COVER_DOMAIN,
+        SERVICE_CLOSE_COVER,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+    api.set_room_positions.assert_awaited_once_with(
+        1,
+        {1: 100, 2: 0},
+        {1: 1, 2: 2},
+    )
+    api.full_close_room.assert_not_awaited()
+
+    api.set_room_positions.reset_mock()
+    await hass.services.async_call(
+        COVER_DOMAIN,
+        SERVICE_SET_COVER_POSITION,
+        {ATTR_ENTITY_ID: entity_id, ATTR_POSITION: 50},
+        blocking=True,
+    )
+    api.set_room_positions.assert_awaited_once_with(
+        1,
+        {1: 68, 2: 21},
+        {1: 1, 2: 2},
+    )
+
+
+async def test_room_does_not_partially_control_an_unaddressable_window(
+    hass: HomeAssistant,
+    mock_config_entry,
+    mock_norman_api,
+) -> None:
+    """Reject room movement when an unlevelled motor needs a non-native target."""
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        version=2,
+        options={
+            CONF_DEFAULT_OPEN_POSITION: 37,
+            CONF_DEFAULT_CLOSE_POSITION: 100,
+            CONF_POSITION_PROFILES: {
+                "room:1": {
+                    CONF_OPEN_POSITION: 42,
+                    CONF_CLOSE_POSITION: 0,
+                },
+                "group:1:1": {
+                    CONF_OPEN_POSITION: 37,
+                    CONF_CLOSE_POSITION: 100,
+                },
+            },
+        },
+    )
+    mock_norman_api.rooms[0].raw = {"Style": 13}
+    mock_norman_api.windows = [
+        NormanWindow(1, "Addressable", 1, 1, None, 37, 1, None, {}),
+        NormanWindow(2, "Unaddressable", 1, -1, None, 42, 1, None, {}),
+    ]
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    entity_id = _entity_id(hass, mock_config_entry.entry_id, "hub-1_room_1")
+    api = mock_config_entry.runtime_data.api
+
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            COVER_DOMAIN,
+            SERVICE_OPEN_COVER,
+            {ATTR_ENTITY_ID: entity_id},
+            blocking=True,
+        )
+
+    api.full_open_room.assert_not_awaited()
+    api.set_room_positions.assert_not_awaited()
+
+
+async def test_missing_overridden_panel_prevents_room_broadcast(
+    hass: HomeAssistant,
+    mock_config_entry,
+    mock_norman_api,
+) -> None:
+    """Honor a stored panel level even when its window record is temporarily absent."""
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        version=2,
+        options={
+            CONF_DEFAULT_OPEN_POSITION: 37,
+            CONF_DEFAULT_CLOSE_POSITION: 100,
+            CONF_POSITION_PROFILES: {
+                "group:1:2": {
+                    CONF_OPEN_POSITION: 42,
+                    CONF_CLOSE_POSITION: 0,
+                }
+            },
+        },
+    )
+    mock_norman_api.rooms[0].raw = {"Style": 13}
+    mock_norman_api.windows[0].position = 37
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    entity_id = _entity_id(hass, mock_config_entry.entry_id, "hub-1_room_1")
+    api = mock_config_entry.runtime_data.api
+
+    await hass.services.async_call(
+        COVER_DOMAIN,
+        SERVICE_OPEN_COVER,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
+
+    api.full_open_room.assert_not_awaited()
+    api.set_room_positions.assert_awaited_once_with(
+        1,
+        {1: 37, 2: 42},
+        {1: 1},
+    )
 
 
 async def test_unconfirmed_command_raises_translated_error(
@@ -231,12 +437,12 @@ async def test_control_session_recovers_on_retry(
     entry.runtime_data.api.set_group_position.assert_awaited_once()
 
 
-async def test_reversed_room_without_levels_cannot_send_full_open_as_close(
+async def test_native_room_without_levels_can_still_use_semantic_endpoints(
     hass: HomeAssistant,
     mock_config_entry,
     mock_norman_api,
 ) -> None:
-    """Hide and reject a reversed close target when no panel levels exist."""
+    """Keep Open/Close when the hub can represent them as room broadcasts."""
     mock_norman_api.rooms = [
         NormanRoom(
             id=1,
@@ -262,15 +468,14 @@ async def test_reversed_room_without_levels_cannot_send_full_open_as_close(
     await hass.async_block_till_done()
     entity_id = _entity_id(hass, mock_config_entry.entry_id, "hub-1_room_1")
     state = hass.states.get(entity_id)
-    assert state.attributes.get("supported_features", 0) == 0
+    assert state.attributes.get("supported_features", 0) == 3
 
-    with pytest.raises(HomeAssistantError) as caught:
-        await hass.services.async_call(
-            COVER_DOMAIN,
-            SERVICE_CLOSE_COVER,
-            {ATTR_ENTITY_ID: entity_id},
-            blocking=True,
-        )
+    await hass.services.async_call(
+        COVER_DOMAIN,
+        SERVICE_CLOSE_COVER,
+        {ATTR_ENTITY_ID: entity_id},
+        blocking=True,
+    )
 
-    assert caught.value.translation_key in {None, "service_not_supported"}
-    mock_config_entry.runtime_data.api.set_room_position.assert_not_awaited()
+    mock_config_entry.runtime_data.api.full_close_room.assert_awaited_once_with(1)
+    mock_config_entry.runtime_data.api.set_room_positions.assert_not_awaited()

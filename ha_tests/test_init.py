@@ -22,7 +22,16 @@ from custom_components.norman_gen1.api import (
     NormanRoom,
     NormanWindow,
 )
-from custom_components.norman_gen1.const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from custom_components.norman_gen1.const import (
+    CONF_CLOSE_POSITION,
+    CONF_DEFAULT_CLOSE_POSITION,
+    CONF_DEFAULT_OPEN_POSITION,
+    CONF_LEGACY_PROFILE_MIGRATION,
+    CONF_OPEN_POSITION,
+    CONF_POSITION_PROFILES,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+)
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
@@ -35,7 +44,7 @@ def _integration_entities(
     return {
         entity.unique_id: entity
         for entity in registry.entities.values()
-        if entity.config_entry_id == entry_id
+        if entity.config_entry_id == entry_id and entity.domain == COVER_DOMAIN
     }
 
 
@@ -95,6 +104,72 @@ async def test_setup_registers_entities_device_and_unloads(
     assert entry.state is ConfigEntryState.NOT_LOADED
 
 
+async def test_v02_entry_migrates_its_effective_profile_after_discovery(
+    hass: HomeAssistant,
+    mock_config_entry,
+    mock_norman_api,
+) -> None:
+    """Preserve an existing room's raw direction while adopting numeric options."""
+    mock_norman_api.rooms[0].raw = {"Style": 99}
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_config_entry.version == 2
+    assert mock_config_entry.options == {
+        CONF_DEFAULT_OPEN_POSITION: 37,
+        CONF_DEFAULT_CLOSE_POSITION: 100,
+        CONF_POSITION_PROFILES: {
+            "room:1": {
+                CONF_OPEN_POSITION: 100,
+                CONF_CLOSE_POSITION: 0,
+            }
+        },
+    }
+
+
+async def test_new_v03_entry_uses_requested_global_defaults(
+    hass: HomeAssistant,
+    mock_config_entry,
+    mock_norman_api,
+) -> None:
+    """Give new installs 37/100 regardless of the hub's legacy style hint."""
+    hass.config_entries.async_update_entry(mock_config_entry, version=2)
+    mock_norman_api.rooms[0].raw = {"Style": 99}
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_config_entry.options == {
+        CONF_DEFAULT_OPEN_POSITION: 37,
+        CONF_DEFAULT_CLOSE_POSITION: 100,
+        CONF_POSITION_PROFILES: {},
+    }
+
+
+async def test_failed_first_discovery_keeps_profile_migration_for_retry(
+    hass: HomeAssistant,
+    mock_config_entry,
+    mock_norman_api,
+) -> None:
+    """Commit delayed v0.2 migration only after a usable hub snapshot exists."""
+    mock_norman_api.auth_error = CannotConnect("offline")
+
+    assert not await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert mock_config_entry.options[CONF_LEGACY_PROFILE_MIGRATION] is True
+
+    mock_norman_api.auth_error = None
+    assert await hass.config_entries.async_unload(mock_config_entry.entry_id)
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert mock_config_entry.state is ConfigEntryState.LOADED
+    assert CONF_LEGACY_PROFILE_MIGRATION not in mock_config_entry.options
+    assert mock_config_entry.options[CONF_DEFAULT_OPEN_POSITION] == 37
+    assert mock_config_entry.options[CONF_DEFAULT_CLOSE_POSITION] == 100
+
+
 async def test_dynamic_room_and_group_are_added_after_natural_refresh(
     hass: HomeAssistant,
     setup_integration,
@@ -133,7 +208,7 @@ async def test_dynamic_room_and_group_are_added_after_natural_refresh(
         "hub-1_room_2",
         "hub-1_room_2_level_1",
     }
-    assert hass.states.get(entities["hub-1_room_2"].entity_id).state == "open"
+    assert hass.states.get(entities["hub-1_room_2"].entity_id).state == "closed"
 
     device_registry = dr.async_get(hass)
     hub_device = device_registry.async_get_device(identifiers={(DOMAIN, "hub-1")})

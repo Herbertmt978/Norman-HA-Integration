@@ -32,6 +32,11 @@ from custom_components.norman_gen1.api import (
 from custom_components.norman_gen1.config_flow import ConfigFlow
 from custom_components.norman_gen1.const import (
     CONF_APP_VERSION,
+    CONF_CLOSE_POSITION,
+    CONF_DEFAULT_CLOSE_POSITION,
+    CONF_DEFAULT_OPEN_POSITION,
+    CONF_OPEN_POSITION,
+    CONF_POSITION_PROFILES,
     DEFAULT_APP_VERSION,
     DEFAULT_PASSWORD,
     DOMAIN,
@@ -202,6 +207,7 @@ def _coordinator_data(
         rooms=rooms,
         windows=windows,
         rooms_by_id={room.id: room for room in rooms},
+        windows_by_id={window.id: window for window in windows},
         windows_by_room=windows_by_room,
         windows_by_group=windows_by_group,
         levels_by_room={
@@ -413,7 +419,7 @@ class TestEntityLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(room_entity._position_profile.open_position, 37)
         self.assertEqual(group_entity._model(), 1)
 
-    async def test_group_specific_tilt_option_controls_closed_semantics(self) -> None:
+    async def test_group_numeric_profile_controls_closed_semantics(self) -> None:
         hass = FakeHass()
         room = _room(1, style=99)
         window = _window(1, 1, 0)
@@ -421,9 +427,24 @@ class TestEntityLifecycle(unittest.IsolatedAsyncioTestCase):
         coordinator = FakeCoordinator(hass, _coordinator_data([room], [window]))
         api = NormanGen1Api(object(), "192.0.2.10", DEFAULT_PASSWORD)
         selected_entry = ConfigEntry(
-            options={"tilt_open_targets": [group_target_id(1, 0)]}
+            options={
+                CONF_DEFAULT_OPEN_POSITION: 100,
+                CONF_DEFAULT_CLOSE_POSITION: 0,
+                CONF_POSITION_PROFILES: {
+                    group_target_id(1, 0): {
+                        CONF_OPEN_POSITION: 37,
+                        CONF_CLOSE_POSITION: 100,
+                    }
+                },
+            }
         )
-        unselected_entry = ConfigEntry(options={"tilt_open_targets": []})
+        unselected_entry = ConfigEntry(
+            options={
+                CONF_DEFAULT_OPEN_POSITION: 100,
+                CONF_DEFAULT_CLOSE_POSITION: 0,
+                CONF_POSITION_PROFILES: {},
+            }
+        )
 
         selected = NormanGroupCover(
             selected_entry, api, coordinator, room, 0, "Panel A"
@@ -470,10 +491,7 @@ class TestEntityLifecycle(unittest.IsolatedAsyncioTestCase):
         api = NormanGen1Api(object(), "192.0.2.10", DEFAULT_PASSWORD)
         entity = NormanRoomCover(ConfigEntry(), api, coordinator, room)
 
-        self.assertEqual(
-            entity.supported_features,
-            CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE,
-        )
+        self.assertEqual(entity.supported_features, CoverEntityFeature(0))
         coordinator.data = _coordinator_data([room], [_window(1, 1, 0)])
         self.assertEqual(
             entity.supported_features,
@@ -482,7 +500,7 @@ class TestEntityLifecycle(unittest.IsolatedAsyncioTestCase):
             | CoverEntityFeature.SET_POSITION,
         )
 
-    async def test_room_rejects_unrepresentable_targets_without_levels(self) -> None:
+    async def test_room_rejects_intermediate_position_without_levels(self) -> None:
         hass = FakeHass()
         room = _room(1, style=13)
         coordinator = FakeCoordinator(hass, _coordinator_data([room], []))
@@ -493,13 +511,8 @@ class TestEntityLifecycle(unittest.IsolatedAsyncioTestCase):
             room,
         )
 
-        for command in (
-            entity.async_open_cover,
-            entity.async_close_cover,
-            lambda: entity.async_set_cover_position(**{ATTR_POSITION: 50}),
-        ):
-            with self.subTest(command=command), self.assertRaises(HomeAssistantError):
-                await command()
+        with self.assertRaises(HomeAssistantError):
+            await entity.async_set_cover_position(**{ATTR_POSITION: 50})
 
     async def test_delayed_refresh_is_cancelled_on_entity_removal(self) -> None:
         hass = FakeHass()

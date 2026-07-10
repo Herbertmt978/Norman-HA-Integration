@@ -4,9 +4,11 @@ from homeassistant.core import HomeAssistant
 import pytest
 
 from custom_components.norman_gen1.const import (
-    CONF_KNOWN_TARGETS,
-    CONF_REVERSED_CLOSE_TARGETS,
-    CONF_TILT_OPEN_TARGETS,
+    CONF_CLOSE_POSITION,
+    CONF_DEFAULT_CLOSE_POSITION,
+    CONF_DEFAULT_OPEN_POSITION,
+    CONF_OPEN_POSITION,
+    CONF_POSITION_PROFILES,
 )
 from custom_components.norman_gen1.diagnostics import async_get_config_entry_diagnostics
 
@@ -23,9 +25,18 @@ async def test_diagnostics_redact_config_and_whitelist_hub_fields(
     hass.config_entries.async_update_entry(
         entry,
         options={
-            CONF_TILT_OPEN_TARGETS: ["room:1"],
-            CONF_REVERSED_CLOSE_TARGETS: ["group:1:1"],
-            CONF_KNOWN_TARGETS: ["room:1", "group:1:1"],
+            CONF_DEFAULT_OPEN_POSITION: 37,
+            CONF_DEFAULT_CLOSE_POSITION: 100,
+            CONF_POSITION_PROFILES: {
+                "room:1": {
+                    CONF_OPEN_POSITION: 42,
+                    CONF_CLOSE_POSITION: 0,
+                },
+                "group:1:1": {
+                    CONF_OPEN_POSITION: 61,
+                    CONF_CLOSE_POSITION: 100,
+                },
+            },
         },
     )
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -55,7 +66,7 @@ async def test_diagnostics_redact_config_and_whitelist_hub_fields(
     assert result["snapshot"]["room_count"] == 1
     assert result["snapshot"]["window_count"] == 1
     assert result["options"] == {
-        "tilt_open_target_count": 1,
-        "reversed_close_target_count": 1,
-        "known_target_count": 2,
+        "default_open_position": 37,
+        "default_close_position": 100,
+        "profile_override_count": 2,
     }

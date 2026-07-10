@@ -9,7 +9,7 @@ This repository is the HACS/custom-integration release track. A Core pull reques
 - Extract `api.py` into a small typed, asynchronous Python package with its own parser, transport, session, identity, and command tests.
 - Publish the package to PyPI with GitHub trusted publishing/OIDC and a provenance attestation. Do not use a static PyPI token or an unguarded manual release workflow.
 - Pin the released package in the Core manifest and include its logger.
-- Keep the initial submission to the single `cover` platform and only the movement options required for safe control. Be prepared to defer diagnostics, reauthentication, reconfiguration, and dynamic discovery if reviewers request a smaller Bronze first pull request.
+- Keep the initial submission focused on the `cover` platform and only the movement options required for safe control. The diagnostic battery sensor is isolated in its own platform so it can be included when reviewers accept the physical-window model or deferred to a follow-up. Be prepared to defer diagnostics, reauthentication, reconfiguration, and dynamic discovery if reviewers request a smaller Bronze first pull request.
 
 ## Core-specific integration files
 
@@ -32,7 +32,12 @@ This repository is the HACS/custom-integration release track. A Core pull reques
 - Use `snapshot_platform` for the platform-state baseline and normal registry fixtures for device assertions.
 - Keep setup/unload behavior in `test_init.py`; keep platform behavior in `test_cover.py`.
 - Cover reauthentication, reconfiguration, options, diagnostics, connection/auth failures, unavailable/recovery behavior, dynamic discovery, command errors, and identity changes.
+- If batteries are included, test normalized 0–100 values, unknown versus unavailable, dynamic physical-window discovery, translated names, stable IDs, and proof that sensors add no client calls.
 - Maintain more than 95% integration coverage and 100% branch coverage for config, reauth, reconfigure, and options flows.
+
+## Battery topology decision
+
+The HACS release creates one sensor per physical `getWindowInfo` record but attaches those sensors to the existing room device. This preserves the user-facing hub → room → controls layout while group covers remain the commandable units. Revisit this explicitly with Core reviewers: separate physical child devices may be more literal, but would fragment covers from their motor diagnostics and add one device per shutter. The sensor platform consumes the cover coordinator snapshot and must never introduce a second update coordinator or polling interval.
 
 ## Companion pull requests and validation
 

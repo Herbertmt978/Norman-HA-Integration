@@ -141,39 +141,50 @@ class TestRoomPositionControl(unittest.TestCase):
     def test_normal_cover_never_treats_open_end_stop_as_closed(self) -> None:
         self.assertFalse(position_is_closed(100, 0, closes_at_both_ends=False))
 
-    def test_room_close_uses_discovered_group_levels(self) -> None:
+    def test_room_positions_use_exact_per_level_targets_and_models(self) -> None:
         api = RecordingApi()
 
-        asyncio.run(api.set_room_position(56548, [3, 1, 1, 0], 0, {1: 2}))
+        asyncio.run(
+            api.set_room_positions(
+                56548,
+                {3: 100, 1: 0, 0: 37},
+                {1: 2},
+            )
+        )
+
+        self.assertEqual(
+            api.calls,
+            [
+                {
+                    "type": "level",
+                    "Lid": 0,
+                    "id": 56548,
+                    "action": 37,
+                    "model": 1,
+                },
+                {"type": "level", "Lid": 1, "id": 56548, "action": 0, "model": 2},
+                {
+                    "type": "level",
+                    "Lid": 3,
+                    "id": 56548,
+                    "action": 100,
+                    "model": 1,
+                },
+            ],
+        )
+
+    def test_room_positions_clamp_each_target(self) -> None:
+        api = RecordingApi()
+
+        asyncio.run(api.set_room_positions(56548, {0: -1, 1: 101}))
 
         self.assertEqual(
             api.calls,
             [
                 {"type": "level", "Lid": 0, "id": 56548, "action": 0, "model": 1},
-                {"type": "level", "Lid": 1, "id": 56548, "action": 0, "model": 2},
-                {"type": "level", "Lid": 3, "id": 56548, "action": 0, "model": 1},
-            ],
-        )
-
-    def test_room_open_uses_discovered_group_levels(self) -> None:
-        api = RecordingApi()
-
-        asyncio.run(api.set_room_position(56548, [0, 1], 100))
-
-        self.assertEqual(
-            api.calls,
-            [
-                {"type": "level", "Lid": 0, "id": 56548, "action": 100, "model": 1},
                 {"type": "level", "Lid": 1, "id": 56548, "action": 100, "model": 1},
             ],
         )
-
-    def test_room_close_falls_back_to_full_close_without_levels(self) -> None:
-        api = RecordingApi()
-
-        asyncio.run(api.set_room_position(56548, [], 0))
-
-        self.assertEqual(api.calls, [{"type": "fullclose", "action": 2, "id": 56548}])
 
     def test_room_commands_sleep_only_between_groups(self) -> None:
         api = RecordingApi()
@@ -181,15 +192,15 @@ class TestRoomPositionControl(unittest.TestCase):
         with patch(
             "custom_components.norman_gen1.api.asyncio.sleep", AsyncMock()
         ) as sleep:
-            asyncio.run(api.set_room_position(56548, [0, 1], 100))
+            asyncio.run(api.set_room_positions(56548, {0: 37, 1: 100}))
 
         sleep.assert_awaited_once_with(0.15)
 
-    def test_intermediate_position_needs_discovered_levels(self) -> None:
+    def test_room_positions_need_discovered_levels(self) -> None:
         api = RecordingApi()
 
         with self.assertRaises(CannotControl):
-            asyncio.run(api.set_room_position(56548, [], 50))
+            asyncio.run(api.set_room_positions(56548, {}))
 
 
 class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
@@ -969,10 +980,10 @@ class TestProtocolEdgeCoverage(unittest.IsolatedAsyncioTestCase):
                 api._session_cookie = "Session=1"
                 await api.set_group_position(1, 0, 100)
 
-    async def test_full_open_fallback_without_levels(self) -> None:
+    async def test_full_open_room_uses_semantic_broadcast(self) -> None:
         api = RecordingApi()
 
-        await api.set_room_position(4, [], 100)
+        await api.full_open_room(4)
 
         self.assertEqual(
             api.calls,
@@ -983,6 +994,45 @@ class TestProtocolEdgeCoverage(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(hub_position_to_ha(0, PositionProfile(0, 100, True)), 0)
         self.assertEqual(hub_position_to_ha(100, PositionProfile(100, 0, True)), 0)
         self.assertIsNone(hub_position_to_ha(50, PositionProfile(50, 50, False)))
+
+
+class TestBatteryParsing(unittest.TestCase):
+    def test_integer_and_decimal_string_percentages_are_normalized(self) -> None:
+        api = RecordingApi()
+        payload = {
+            "windows": [
+                {
+                    "Id": index,
+                    "roomId": 1,
+                    "Level": 1,
+                    "battery": battery,
+                }
+                for index, battery in enumerate((0, "21", 100, " 82 "), start=1)
+            ]
+        }
+
+        windows = api._parse_windows(payload)
+
+        self.assertEqual([window.battery for window in windows], [0, 21, 100, 82])
+
+    def test_malformed_or_out_of_range_batteries_become_unknown(self) -> None:
+        api = RecordingApi()
+        values = (None, True, 21.0, 21.5, "", "21%", "unknown", -1, 101)
+        payload = {
+            "windows": [
+                {
+                    "Id": index,
+                    "roomId": 1,
+                    "Level": 1,
+                    "battery": battery,
+                }
+                for index, battery in enumerate(values, start=1)
+            ]
+        }
+
+        windows = api._parse_windows(payload)
+
+        self.assertEqual([window.battery for window in windows], [None] * len(values))
 
 
 if __name__ == "__main__":

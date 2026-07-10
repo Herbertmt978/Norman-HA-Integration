@@ -2,6 +2,7 @@
 
 import aiohttp
 from homeassistant.components.cover import DOMAIN as COVER_DOMAIN
+from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
     SOURCE_RECONFIGURE,
@@ -42,7 +43,7 @@ def _user_input(host: str = "192.0.2.10") -> dict[str, str]:
 
 def _add_legacy_registry_entries(
     hass: HomeAssistant, entry: MockConfigEntry
-) -> tuple[str, str, dict[str, str]]:
+) -> tuple[str, str, str, dict[str, str], str]:
     """Prepopulate the registry shape created by a host-identity release."""
     old_hub_id = entry.data[CONF_HOST]
     device = dr.async_get(hass).async_get_or_create(
@@ -50,13 +51,19 @@ def _add_legacy_registry_entries(
         identifiers={(DOMAIN, old_hub_id)},
         name="Legacy Norman hub",
     )
+    room_device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, f"{old_hub_id}_room_1")},
+        name="Legacy living room",
+        via_device=(DOMAIN, old_hub_id),
+    )
     registry = er.async_get(hass)
     room = registry.async_get_or_create(
         COVER_DOMAIN,
         DOMAIN,
         f"{old_hub_id}_room_1",
         config_entry=entry,
-        device_id=device.id,
+        device_id=room_device.id,
         suggested_object_id="legacy_room",
     )
     group = registry.async_get_or_create(
@@ -64,16 +71,26 @@ def _add_legacy_registry_entries(
         DOMAIN,
         f"{old_hub_id}_room_1_level_1",
         config_entry=entry,
-        device_id=device.id,
+        device_id=room_device.id,
         suggested_object_id="legacy_panel",
+    )
+    battery = registry.async_get_or_create(
+        SENSOR_DOMAIN,
+        DOMAIN,
+        f"{old_hub_id}_window_1_battery",
+        config_entry=entry,
+        device_id=room_device.id,
+        suggested_object_id="legacy_panel_battery",
     )
     return (
         old_hub_id,
         device.id,
+        room_device.id,
         {
             "hub-1_room_1": room.entity_id,
             "hub-1_room_1_level_1": group.entity_id,
         },
+        battery.entity_id,
     )
 
 
@@ -82,21 +99,32 @@ def _assert_legacy_registry_was_migrated(
     entry: MockConfigEntry,
     old_hub_id: str,
     old_device_id: str,
+    old_room_device_id: str,
     expected_entity_ids: dict[str, str],
+    battery_entity_id: str,
 ) -> None:
     """Assert registry identities changed without duplicating user objects."""
     registry = er.async_get(hass)
     migrated = {
         entity.unique_id: entity.entity_id
         for entity in registry.entities.values()
-        if entity.config_entry_id == entry.entry_id
+        if entity.config_entry_id == entry.entry_id and entity.domain == COVER_DOMAIN
     }
     assert migrated == expected_entity_ids
+    battery = registry.async_get(battery_entity_id)
+    assert battery is not None
+    assert battery.unique_id == "hub-1_window_1_battery"
+    assert battery.device_id == old_room_device_id
     device_registry = dr.async_get(hass)
     device = device_registry.async_get_device({(DOMAIN, "hub-1")})
     assert device is not None
     assert device.id == old_device_id
     assert device_registry.async_get_device({(DOMAIN, old_hub_id)}) is None
+    room_device = device_registry.async_get_device({(DOMAIN, "hub-1_room_1")})
+    assert room_device is not None
+    assert room_device.id == old_room_device_id
+    assert room_device.via_device_id == old_device_id
+    assert device_registry.async_get_device({(DOMAIN, f"{old_hub_id}_room_1")}) is None
 
 
 async def test_user_flow_uses_factory_default_and_creates_entry(
@@ -501,9 +529,13 @@ async def test_reauth_upgrades_legacy_host_unique_id(
     hass.config_entries.async_update_entry(
         mock_config_entry, unique_id=mock_config_entry.data[CONF_HOST]
     )
-    old_hub_id, old_device_id, entity_ids = _add_legacy_registry_entries(
-        hass, mock_config_entry
-    )
+    (
+        old_hub_id,
+        old_device_id,
+        old_room_device_id,
+        entity_ids,
+        battery_entity_id,
+    ) = _add_legacy_registry_entries(hass, mock_config_entry)
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={
@@ -526,7 +558,9 @@ async def test_reauth_upgrades_legacy_host_unique_id(
         mock_config_entry,
         old_hub_id,
         old_device_id,
+        old_room_device_id,
         entity_ids,
+        battery_entity_id,
     )
 
 
@@ -648,9 +682,13 @@ async def test_same_host_reconfigure_migrates_legacy_registry_identity(
     hass.config_entries.async_update_entry(
         mock_config_entry, unique_id=mock_config_entry.data[CONF_HOST]
     )
-    old_hub_id, old_device_id, entity_ids = _add_legacy_registry_entries(
-        hass, mock_config_entry
-    )
+    (
+        old_hub_id,
+        old_device_id,
+        old_room_device_id,
+        entity_ids,
+        battery_entity_id,
+    ) = _add_legacy_registry_entries(hass, mock_config_entry)
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={
@@ -673,7 +711,9 @@ async def test_same_host_reconfigure_migrates_legacy_registry_identity(
         mock_config_entry,
         old_hub_id,
         old_device_id,
+        old_room_device_id,
         entity_ids,
+        battery_entity_id,
     )
 
 

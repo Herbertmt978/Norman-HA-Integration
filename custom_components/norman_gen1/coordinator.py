@@ -33,6 +33,7 @@ class NormanData:
     rooms: list[NormanRoom]
     windows: list[NormanWindow]
     rooms_by_id: dict[int, NormanRoom]
+    windows_by_id: dict[int, NormanWindow]
     windows_by_room: dict[int, list[NormanWindow]]
     windows_by_group: dict[tuple[int, int], list[NormanWindow]]
     levels_by_room: dict[int, list[int]]
@@ -130,6 +131,7 @@ class NormanDataUpdateCoordinator(DataUpdateCoordinator[NormanData]):
             rooms=list(rooms_by_id.values()),
             windows=valid_windows,
             rooms_by_id=rooms_by_id,
+            windows_by_id={window.id: window for window in valid_windows},
             windows_by_room=dict(windows_by_room),
             windows_by_group=dict(windows_by_group),
             levels_by_room={

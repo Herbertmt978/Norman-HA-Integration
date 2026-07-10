@@ -79,7 +79,7 @@ jobs:
           python -m coverage erase
           python -m coverage run --branch \
             --source="$COVERAGE_SOURCE" -m pytest ha_tests -q
-          python -m coverage report --omit="*/api.py" \
+          python -m coverage report --omit="*/api.py,*/profiles.py" \
             --show-missing --fail-under=95
           python -m coverage report --include="*/config_flow.py" \
             --show-missing --fail-under=100

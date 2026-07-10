@@ -131,7 +131,7 @@ class NormanWindow:
     group_id: int | None
     position: int | None
     model: int
-    battery: str | None
+    battery: int | None
     raw: dict[str, Any]
 
 
@@ -340,36 +340,37 @@ class NormanGen1Api:
             }
         )
 
-    async def set_room_position(
+    async def set_room_positions(
         self,
         room_id: int,
-        levels: list[int],
-        position: int,
-        models_by_level: dict[int, int] | None = None,
+        positions_by_level: Mapping[int, int],
+        models_by_level: Mapping[int, int] | None = None,
     ) -> None:
-        """Move each discovered room level to a raw hub position."""
-        position = max(0, min(100, int(position)))
-        unique_levels = sorted(set(levels))
-        if not unique_levels:
-            if position >= 100:
-                await self.full_open_room(room_id)
-                return
-            if position <= 0:
-                await self.full_close_room(room_id)
-                return
+        """Move discovered room levels to their exact raw hub positions."""
+        positions = {
+            int(level): max(0, min(100, int(position)))
+            for level, position in positions_by_level.items()
+        }
+        if not positions:
             raise CannotControl(
-                f"Cannot set room {room_id} to {position}% because no group levels were discovered"
+                f"Cannot set room {room_id} because no group levels were discovered"
             )
 
         _LOGGER.debug(
             "Controlling Norman room %s via %s group level command(s)",
             room_id,
-            len(unique_levels),
+            len(positions),
         )
-        for index, level in enumerate(unique_levels):
+        levels = sorted(positions)
+        for index, level in enumerate(levels):
             model = models_by_level.get(level, 1) if models_by_level else 1
-            await self.set_group_position(room_id, level, position, model)
-            if index < len(unique_levels) - 1:
+            await self.set_group_position(
+                room_id,
+                level,
+                positions[level],
+                model,
+            )
+            if index < len(levels) - 1:
                 await asyncio.sleep(0.15)
 
     async def _remote_control(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -493,7 +494,7 @@ class NormanGen1Api:
                     group_id=_as_int(window.get("groupId")),
                     position=position,
                     model=parsed_model if parsed_model is not None else 1,
-                    battery=_as_display_text(window.get("battery")),
+                    battery=_as_battery_percentage(window.get("battery")),
                     raw=window,
                 )
             )
@@ -515,6 +516,22 @@ def _as_int(value: Any) -> int | None:
         except ValueError:
             return None
     return None
+
+
+def _as_battery_percentage(value: Any) -> int | None:
+    """Normalize a physical motor battery without accepting lossy values."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        battery = value
+    elif isinstance(value, str):
+        try:
+            battery = int(value.strip(), 10)
+        except ValueError:
+            return None
+    else:
+        return None
+    return battery if 0 <= battery <= 100 else None
 
 
 def _as_identifier(value: Any) -> str | None:

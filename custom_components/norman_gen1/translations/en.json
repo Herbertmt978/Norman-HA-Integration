@@ -55,18 +55,64 @@
     }
   },
   "options": {
+    "abort": {
+      "migration_pending": "Set up the integration successfully once before changing these options so the existing movement directions can be migrated safely.",
+      "no_targets": "No rooms or panels are available to configure.",
+      "target_unavailable": "The selected room or panel is no longer available."
+    },
+    "error": {
+      "invalid_position": "Enter valid raw hub positions from 0 to 100.",
+      "positions_must_differ": "Open and Closed must use different raw positions.",
+      "whole_number": "Enter a whole number from 0 to 100."
+    },
     "step": {
       "init": {
         "title": "Norman Gen 1 Hub options",
-        "description": "Adjust plantation shutter movement profiles. Selecting a room also applies to its panels; selecting a panel applies only to that panel.",
+        "description": "Set the raw positions used by the native Open and Close cover controls. Room settings are inherited by their panels unless a panel has its own override.",
+        "menu_options": {
+          "defaults": "Default positions",
+          "target": "Room or panel positions"
+        }
+      },
+      "defaults": {
+        "title": "Default shutter positions",
+        "description": "These raw hub positions apply to rooms and panels without an override. The recommended Norman plantation-shutter defaults are Open 37 and Closed 100.",
         "data": {
-          "tilt_open_targets": "Use tilt-shutter open position 37",
-          "reversed_close_targets": "Close toward position 100"
+          "default_open_position": "Open position",
+          "default_close_position": "Closed position"
         },
         "data_description": {
-          "tilt_open_targets": "Treat both end stops as closed and map Home Assistant 100% open to the visual-open louver position.",
-          "reversed_close_targets": "Use the position-100 end stop as closed. A safe visual-open target is applied automatically."
+          "default_open_position": "Whole-number raw hub position from 0 to 100.",
+          "default_close_position": "Choose the 0 or 100 end stop used by Close."
         }
+      },
+      "target": {
+        "title": "Choose a room or panel",
+        "description": "A room override is inherited by its panels. A panel override applies only to that panel.",
+        "data": {
+          "target": "Room or panel"
+        }
+      },
+      "profile": {
+        "title": "Positions for {target_name}",
+        "description": "Enable inheritance to follow the parent setting, or disable it to pin raw positions for {target_name}.",
+        "data": {
+          "inherit": "Inherit positions",
+          "open_position": "Open position",
+          "close_position": "Closed position"
+        },
+        "data_description": {
+          "inherit": "Panels inherit their room; rooms inherit the global defaults.",
+          "open_position": "Whole-number raw hub position from 0 to 100.",
+          "close_position": "Choose the 0 or 100 end stop used by Close."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "window_battery": {
+        "name": "{window_name} battery"
       }
     }
   },

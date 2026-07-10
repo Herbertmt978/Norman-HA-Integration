@@ -13,11 +13,19 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .api import NormanGen1Api, NormanRoom, NormanWindow, ha_position_to_hub
+from .api import (
+    NormanGen1Api,
+    NormanRoom,
+    NormanWindow,
+    PositionProfile,
+    ha_position_to_hub,
+    resolve_position_profile,
+)
 from .const import DOMAIN
 from .coordinator import NormanConfigEntry, NormanDataUpdateCoordinator
 from .entity import NormanBaseCover
 from .helpers import clean_label, group_name
+from .profiles import configured_group_levels, resolve_configured_profile
 
 PARALLEL_UPDATES = 1
 
@@ -82,12 +90,12 @@ class NormanRoomCover(NormanBaseCover):
     def supported_features(self) -> CoverEntityFeature:
         """Expose only commands that can be represented by discovered levels."""
         features = CoverEntityFeature(0)
-        profile = self._position_profile
-        if self._levels() or profile.open_position == 100:
+        can_fan_out = self._can_fan_out()
+        if can_fan_out or self._can_broadcast("open_position"):
             features |= CoverEntityFeature.OPEN
-        if self._levels() or profile.close_position == 0:
+        if can_fan_out or self._can_broadcast("close_position"):
             features |= CoverEntityFeature.CLOSE
-        if self._levels():
+        if can_fan_out:
             features |= CoverEntityFeature.SET_POSITION
         return features
 
@@ -97,12 +105,32 @@ class NormanRoomCover(NormanBaseCover):
             for window in self.coordinator.data.windows_by_room.get(self.room.id, [])
         ]
 
+    def _hub_position_samples(self) -> list[tuple[int | None, PositionProfile]]:
+        """Normalize every physical window with its effective panel profile."""
+        return [
+            (
+                window.position,
+                resolve_configured_profile(
+                    self.entry.options,
+                    self.room.id,
+                    window.level if window.level >= 0 else None,
+                ),
+            )
+            for window in self.coordinator.data.windows_by_room.get(self.room.id, [])
+        ]
+
     def _levels(self) -> list[int]:
         return self.coordinator.data.levels_by_room.get(self.room.id, [])
 
+    def _command_levels(self) -> list[int]:
+        return sorted(
+            set(self._levels())
+            | configured_group_levels(self.entry.options, self.room.id)
+        )
+
     def _models_by_level(self) -> dict[int, int]:
         models: dict[int, int] = {}
-        for level in self._levels():
+        for level in self._command_levels():
             for window in self.coordinator.data.windows_by_group.get(
                 (self.room.id, level), []
             ):
@@ -110,56 +138,116 @@ class NormanRoomCover(NormanBaseCover):
                 break
         return models
 
+    def _profiles_by_level(self) -> dict[int, PositionProfile]:
+        return {
+            level: resolve_configured_profile(
+                self.entry.options,
+                self.room.id,
+                level,
+            )
+            for level in self._command_levels()
+        }
+
+    def _endpoint_positions(self, attribute: str) -> dict[int, int]:
+        return {
+            level: int(getattr(profile, attribute))
+            for level, profile in self._profiles_by_level().items()
+        }
+
+    def _mapped_positions(self, position: int) -> dict[int, int]:
+        return {
+            level: ha_position_to_hub(position, profile)
+            for level, profile in self._profiles_by_level().items()
+        }
+
+    def _can_broadcast(self, attribute: str) -> bool:
+        native_target = int(
+            getattr(resolve_position_profile(self._current_room.raw), attribute)
+        )
+        windows = self.coordinator.data.windows_by_room.get(self.room.id, [])
+        profiles = list(self._profiles_by_level().values())
+        profiles.extend(
+            resolve_configured_profile(
+                self.entry.options,
+                self.room.id,
+            )
+            for window in windows
+            if window.level < 0
+        )
+        if profiles:
+            return all(
+                int(getattr(profile, attribute)) == native_target
+                for profile in profiles
+            )
+        return int(getattr(self._position_profile, attribute)) == native_target
+
+    def _can_fan_out(self) -> bool:
+        windows = self.coordinator.data.windows_by_room.get(self.room.id, [])
+        return bool(self._command_levels()) and all(
+            window.level >= 0 for window in windows
+        )
+
     async def async_open_cover(self, **kwargs: Any) -> None:
         """Open the room to its visual-open target."""
-        profile = self._position_profile
-        self._require_levels_for_nonstandard_target(profile.open_position, 100)
+        if self._can_broadcast("open_position"):
+            await self._run_control_command(
+                lambda: self.api.full_open_room(self.room.id),
+                100,
+            )
+            return
+        if not self._can_fan_out():
+            self._raise_unsupported_position()
+        positions = self._endpoint_positions("open_position")
+        if not positions:
+            self._raise_unsupported_position()
+        models = self._models_by_level()
         await self._run_control_command(
-            lambda: self.api.set_room_position(
+            lambda: self.api.set_room_positions(
                 self.room.id,
-                self._levels(),
-                profile.open_position,
-                self._models_by_level(),
+                positions,
+                models,
             ),
             100,
         )
 
     async def async_close_cover(self, **kwargs: Any) -> None:
         """Close the room on its configured movement branch."""
-        profile = self._position_profile
-        self._require_levels_for_nonstandard_target(profile.close_position, 0)
+        if self._can_broadcast("close_position"):
+            await self._run_control_command(
+                lambda: self.api.full_close_room(self.room.id),
+                0,
+            )
+            return
+        if not self._can_fan_out():
+            self._raise_unsupported_position()
+        positions = self._endpoint_positions("close_position")
+        if not positions:
+            self._raise_unsupported_position()
+        models = self._models_by_level()
         await self._run_control_command(
-            lambda: self.api.set_room_position(
+            lambda: self.api.set_room_positions(
                 self.room.id,
-                self._levels(),
-                profile.close_position,
-                self._models_by_level(),
+                positions,
+                models,
             ),
             0,
         )
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         """Set a Home Assistant position on the configured hub branch."""
-        if not self._levels():
+        if not self._can_fan_out():
             self._raise_unsupported_position()
         position = max(0, min(100, int(kwargs[ATTR_POSITION])))
-        hub_position = ha_position_to_hub(position, self._position_profile)
+        positions = self._mapped_positions(position)
+        models = self._models_by_level()
         await self._run_control_command(
-            lambda: self.api.set_room_position(
+            lambda: self.api.set_room_positions(
                 self.room.id,
-                self._levels(),
-                hub_position,
-                self._models_by_level(),
+                positions,
+                models,
             ),
             position,
         )
-
-    def _require_levels_for_nonstandard_target(
-        self, target: int, room_command_target: int
-    ) -> None:
-        """Reject a target that the room-wide full-open/full-close API cannot represent."""
-        if not self._levels() and target != room_command_target:
-            self._raise_unsupported_position()
 
     def _raise_unsupported_position(self) -> None:
         """Raise a translated error for rooms without usable group levels."""

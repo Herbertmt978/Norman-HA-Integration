@@ -7,12 +7,8 @@ from typing import Any
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
-from .const import (
-    CONF_KNOWN_TARGETS,
-    CONF_REVERSED_CLOSE_TARGETS,
-    CONF_TILT_OPEN_TARGETS,
-)
 from .coordinator import NormanConfigEntry
+from .profiles import resolve_default_profile, stored_position_profiles
 
 TO_REDACT = {"host", "password"}
 SAFE_HUB_FIELDS = ("swVer", "firmwareVersion", "version", "status", "errorCode")
@@ -27,16 +23,13 @@ async def async_get_config_entry_diagnostics(
     coordinator = entry.runtime_data
     api = coordinator.api
     data = coordinator.data
+    default_profile = resolve_default_profile(entry.options)
     return {
         "config_entry": async_redact_data(dict(entry.data), TO_REDACT),
         "options": {
-            "tilt_open_target_count": _target_count(
-                entry.options.get(CONF_TILT_OPEN_TARGETS)
-            ),
-            "reversed_close_target_count": _target_count(
-                entry.options.get(CONF_REVERSED_CLOSE_TARGETS)
-            ),
-            "known_target_count": _target_count(entry.options.get(CONF_KNOWN_TARGETS)),
+            "default_open_position": default_profile.open_position,
+            "default_close_position": default_profile.close_position,
+            "profile_override_count": len(stored_position_profiles(entry.options)),
         },
         "hub": {
             key: value
@@ -68,8 +61,3 @@ async def async_get_config_entry_diagnostics(
             ],
         },
     }
-
-
-def _target_count(value: Any) -> int:
-    """Return a count without exposing internal room or group target IDs."""
-    return len(value) if isinstance(value, list) else 0
