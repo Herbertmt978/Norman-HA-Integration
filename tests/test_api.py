@@ -997,6 +997,25 @@ class TestProtocolEdgeCoverage(unittest.IsolatedAsyncioTestCase):
 
 
 class TestBatteryParsing(unittest.TestCase):
+    def test_motor_sort_order_is_normalized(self) -> None:
+        api = RecordingApi()
+        payload = {
+            "windows": [
+                {"Id": 1, "roomId": 1, "Level": 1, "levelsort": [0, "2"]},
+                {"Id": 2, "roomId": 1, "Level": 2, "levelsort": [0, 1]},
+                {"Id": 3, "roomId": 1, "Level": 0, "levelsort": ["invalid"]},
+                {"Id": 4, "roomId": 1, "Level": 0, "levelsort": "2"},
+                {"Id": 5, "roomId": 1, "Level": 0, "levelsort": [0]},
+            ]
+        }
+
+        windows = api._parse_windows(payload)
+
+        self.assertEqual(
+            [window.sort_order for window in windows],
+            [2, None, None, None, None],
+        )
+
     def test_integer_and_decimal_string_percentages_are_normalized(self) -> None:
         api = RecordingApi()
         payload = {

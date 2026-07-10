@@ -13,7 +13,7 @@ The Gen 1 protocol was inferred from local network traffic and verified against 
 - Global, room, and panel movement profiles; new installs default to Open `37`
   and Closed `100`.
 - One diagnostic battery-percentage sensor for every physical motor reported by
-  the hub.
+  the hub, named to match its commandable panel.
 - Dynamic addition of rooms and panels discovered after setup.
 - Reauthentication, connection reconfiguration, translated errors, and privacy-safe diagnostics.
 - Local communication only; shutter control has no cloud dependency.
@@ -136,12 +136,14 @@ Typical use cases include scheduled privacy positions, closing rooms when everyo
 
 - The hub is polled every 60 seconds.
 - Room metadata and shutter state are fetched in one serialized authenticated transaction.
-- Motor battery percentages come from that same `getWindowInfo` response. Battery sensors do not add a poll, login, cookie, or network request.
+- During normal polling, motor battery percentages come from the same `getWindowInfo` response and add no separate poll, login, cookie, or network request.
+- Battery names use the same room and level metadata as the Controls panel. If one panel contains multiple physical motors, they are numbered deterministically as `motor 1`, `motor 2`, and so on.
 - A rejected session is retried once with a fresh login.
 - A failed Cherokee CGI response is fully consumed before recovery starts, so recovery requests cannot overlap a still-running failed request.
 - Authentication failures start Home Assistant's reauthentication flow.
 - Communication, malformed-data, empty-snapshot, and hub-identity failures make entities unavailable without deleting their last known registry entries.
 - New rooms, groups, and physical-motor battery sensors are added dynamically after a successful poll.
+- If a known motor's correlated panel label or motor number changes, the config entry reloads once so all translated battery names remain consistent.
 - After a command, the requested state is shown optimistically for 10 seconds before a refresh.
 
 ## Reauthentication and reconfiguration
@@ -178,7 +180,7 @@ Remove the config entry from **Settings → Devices & services**. Home Assistant
 - A panel entity represents one commandable room level. Firmware may report multiple window records for the same level; those records remain one aggregate control.
 - Battery sensors represent the individual physical window/motor records and are attached to the existing room device so the room-grouped UI remains intact.
 - Direct proprietary RF or Bluetooth control is not provided; commands intentionally pass through the Norman hub and repeaters.
-- Entity display names are learned when entities are first created. Rename entities in Home Assistant if hub-side names later change.
+- Correlated panel-name, level-numbering, and motor-order changes trigger an automatic reload. User-assigned Home Assistant entity names remain unchanged.
 - Gen 2 compatibility is not claimed.
 
 ## Development and verification
@@ -197,6 +199,12 @@ Real Home Assistant tests use `requirements_ha_minimum.txt` or `requirements_ha_
 An eventual Home Assistant Core submission will also require extracting the protocol client into a typed asynchronous PyPI package, adding the Core-specific manifest/quality-scale files, and preparing separate documentation and brands pull requests. The integration code and behavioral tests are structured to make that extraction mechanical rather than architectural.
 
 ## Changelog
+
+### 0.3.1
+
+- Aligns every correlated motor-battery name with the commandable room/panel label shown under Controls instead of exposing inconsistent hub-internal names.
+- Adds translated `motor 1`, `motor 2` suffixes only when one commandable panel contains multiple physical motors, following the hub's panel-slot order with a stable window-ID fallback.
+- Keeps battery unique IDs and existing entity IDs unchanged, and preserves user-assigned Home Assistant names during the upgrade.
 
 ### 0.3.0
 

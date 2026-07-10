@@ -113,6 +113,18 @@
     "sensor": {
       "window_battery": {
         "name": "{window_name} battery"
+      },
+      "group_motor_battery": {
+        "name": "{group_name} motor {motor_number} battery"
+      },
+      "group_battery": {
+        "name": "Group {group_number} battery"
+      },
+      "group_numbered_motor_battery": {
+        "name": "Group {group_number} motor {motor_number} battery"
+      },
+      "unassigned_motor_battery": {
+        "name": "Unassigned motor {window_id} battery"
       }
     }
   },

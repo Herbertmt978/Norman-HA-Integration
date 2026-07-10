@@ -278,6 +278,34 @@ class TestCoordinator(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(UpdateFailed):
             await coordinator._async_update_data()
 
+    async def test_duplicate_window_ids_keep_only_the_first_valid_record(self) -> None:
+        class DuplicateWindowApi:
+            @asynccontextmanager
+            async def authenticated_session(self):
+                yield {}
+
+            async def get_rooms(self):
+                return [_room(1), _room(2)]
+
+            async def get_windows(self):
+                return [_window(7, 1, 0), _window(7, 2, 1)]
+
+        coordinator = NormanDataUpdateCoordinator(
+            FakeHass(), DuplicateWindowApi(), ConfigEntry()
+        )
+
+        with self.assertLogs(
+            "custom_components.norman_gen1.coordinator", level="WARNING"
+        ) as logs:
+            data = await coordinator._async_update_data()
+
+        self.assertEqual(
+            [(window.id, window.room_id) for window in data.windows], [(7, 1)]
+        )
+        self.assertEqual(data.windows_by_id[7].room_id, 1)
+        self.assertNotIn(2, data.windows_by_room)
+        self.assertTrue(any("duplicate" in message.lower() for message in logs.output))
+
     async def test_last_known_room_metadata_survives_a_partial_refresh(self) -> None:
         class PartialRoomApi:
             def __init__(self) -> None:

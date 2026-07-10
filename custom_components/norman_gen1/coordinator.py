@@ -97,11 +97,16 @@ class NormanDataUpdateCoordinator(DataUpdateCoordinator[NormanData]):
         windows_by_group: dict[tuple[int, int], list[NormanWindow]] = defaultdict(list)
         levels_by_room: dict[int, set[int]] = defaultdict(set)
         valid_windows: list[NormanWindow] = []
+        seen_window_ids: set[int] = set()
 
         for window in windows:
             if window.room_id < 0:
                 _LOGGER.warning("Ignoring Norman window without a valid room id")
                 continue
+            if window.id in seen_window_ids:
+                _LOGGER.warning("Ignoring Norman window with a duplicate id")
+                continue
+            seen_window_ids.add(window.id)
             valid_windows.append(window)
             windows_by_room[window.room_id].append(window)
             if window.level >= 0:

@@ -133,6 +133,7 @@ class NormanWindow:
     model: int
     battery: int | None
     raw: dict[str, Any]
+    sort_order: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,6 +486,7 @@ class NormanGen1Api:
             parsed_room_id = _as_int(room_id)
             parsed_level = _as_int(level)
             parsed_model = _as_int(window.get("model"))
+            sort_order = _level_sort_order(window, parsed_level)
             windows.append(
                 NormanWindow(
                     id=window_id,
@@ -496,9 +498,21 @@ class NormanGen1Api:
                     model=parsed_model if parsed_model is not None else 1,
                     battery=_as_battery_percentage(window.get("battery")),
                     raw=window,
+                    sort_order=sort_order,
                 )
             )
         return windows
+
+
+def _level_sort_order(window: Mapping[str, Any], level: int | None) -> int | None:
+    """Return this motor's hub-defined slot within its commandable level."""
+    values = window.get("levelsort")
+    if level is None or level < 0 or not isinstance(values, list):
+        return None
+    if level >= len(values):
+        return None
+    value = _as_int(values[level])
+    return value if value is not None and value > 0 else None
 
 
 def _as_int(value: Any) -> int | None:

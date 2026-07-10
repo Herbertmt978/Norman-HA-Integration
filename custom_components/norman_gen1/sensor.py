@@ -16,7 +16,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .api import NormanGen1Api, NormanRoom, NormanWindow
 from .coordinator import NormanConfigEntry, NormanDataUpdateCoordinator
 from .device import room_device_info
-from .helpers import clean_label
+from .helpers import BatteryMotorLabel, battery_motor_labels
 
 PARALLEL_UPDATES = 0
 
@@ -30,9 +30,37 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     api = coordinator.api
     known_windows: set[int] = set()
+    known_window_labels: dict[int, BatteryMotorLabel] = {}
+    reload_scheduled = False
 
     @callback
     def add_discovered_entities() -> None:
+        nonlocal known_window_labels, reload_scheduled
+        labels_by_window_id: dict[int, BatteryMotorLabel] = {}
+        for room_id, windows in coordinator.data.windows_by_room.items():
+            room = coordinator.data.rooms_by_id.get(room_id)
+            if room is None:
+                continue
+            labels_by_window_id.update(
+                battery_motor_labels(
+                    room.group_names,
+                    windows,
+                    coordinator.data.levels_by_room.get(room_id, []),
+                )
+            )
+        if known_window_labels and any(
+            window_id in coordinator.data.windows_by_id
+            and labels_by_window_id.get(window_id) != label
+            for window_id, label in known_window_labels.items()
+        ):
+            if not reload_scheduled:
+                reload_scheduled = True
+                hass.async_create_task(
+                    hass.config_entries.async_reload(entry.entry_id),
+                    f"reload {entry.title} after Norman motor labels change",
+                )
+            return
+
         entities: list[SensorEntity] = []
         for window in coordinator.data.windows:
             if window.id in known_windows:
@@ -42,8 +70,22 @@ async def async_setup_entry(
                 continue
             known_windows.add(window.id)
             entities.append(
-                NormanWindowBatterySensor(entry, api, coordinator, room, window)
+                NormanWindowBatterySensor(
+                    entry,
+                    api,
+                    coordinator,
+                    room,
+                    window,
+                    labels_by_window_id.get(window.id),
+                )
             )
+        known_window_labels.update(
+            {
+                window_id: labels_by_window_id[window_id]
+                for window_id in known_windows
+                if window_id in labels_by_window_id
+            }
+        )
         if entities:
             async_add_entities(entities)
 
@@ -70,6 +112,7 @@ class NormanWindowBatterySensor(
         coordinator: NormanDataUpdateCoordinator,
         room: NormanRoom,
         window: NormanWindow,
+        label: BatteryMotorLabel | None,
     ) -> None:
         """Initialize a physical-window battery sensor."""
         super().__init__(coordinator)
@@ -78,8 +121,36 @@ class NormanWindowBatterySensor(
         self._room_id = room.id
         self._window_id = window.id
         self._attr_unique_id = f"{api.hub_id}_window_{window.id}_battery"
-        self._attr_translation_placeholders = {"window_name": clean_label(window.name)}
+        translation_key, placeholders = self._motor_label_translation(window, label)
+        self._attr_translation_key = translation_key
+        self._attr_translation_placeholders = placeholders
         self._attr_device_info = room_device_info(api, room)
+
+    @staticmethod
+    def _motor_label_translation(
+        window: NormanWindow,
+        label: BatteryMotorLabel | None,
+    ) -> tuple[str, dict[str, str]]:
+        """Return translated entity-name metadata for one correlated motor."""
+        if label is None or (label.name is None and label.group_number is None):
+            return "unassigned_motor_battery", {"window_id": str(window.id)}
+        if label.group_number is not None:
+            if label.number is None:
+                return "group_battery", {
+                    "group_number": str(label.group_number),
+                }
+            return "group_numbered_motor_battery", {
+                "group_number": str(label.group_number),
+                "motor_number": str(label.number),
+            }
+        if label.name is None:
+            return "unassigned_motor_battery", {"window_id": str(window.id)}
+        if label.number is None:
+            return "window_battery", {"window_name": label.name}
+        return "group_motor_battery", {
+            "group_name": label.name,
+            "motor_number": str(label.number),
+        }
 
     @property
     def _current_window(self) -> NormanWindow | None:
