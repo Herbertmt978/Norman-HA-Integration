@@ -1,36 +1,92 @@
 {
   "config": {
+    "abort": {
+      "already_configured": "This hub is already configured.",
+      "hub_identity_unavailable": "Home Assistant cannot verify that the new address is the same hub. Remove and add the integration again, or reconnect the old address first so its hub ID can be learned.",
+      "reauth_entry_missing": "The config entry is no longer available.",
+      "reauth_successful": "Authentication was updated successfully.",
+      "reconfigure_successful": "The hub connection settings were updated successfully.",
+      "wrong_hub": "The address or credentials belong to a different Norman hub."
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the Norman Gen 1 hub. Check the IP address and network access.",
+      "invalid_auth": "The hub rejected the password.",
+      "invalid_host": "Enter only an IP address, hostname, or root HTTP URL without credentials, a path, query, or fragment.",
+      "no_devices": "The hub responded, but no rooms or shutter devices were discovered.",
+      "unknown": "An unexpected error occurred."
+    },
     "step": {
       "user": {
-        "title": "Norman Gen 1 Hub",
+        "title": "Connect a Norman Gen 1 Hub",
         "description": "Connect to a Norman Gen 1 shutter hub over the local network.",
         "data": {
           "host": "Host",
           "password": "Password",
           "app_version": "App version"
+        },
+        "data_description": {
+          "host": "The hub IP address or local hostname.",
+          "password": "The factory password is pre-filled. Replace it only if the hub password was changed.",
+          "app_version": "The Norman app version string sent to the hub."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect to the Norman Gen 1 Hub",
+        "description": "Enter the local hub password. The factory password is pre-filled.",
+        "data": {
+          "password": "Password"
+        }
+      },
+      "reconfigure": {
+        "title": "Update Norman Gen 1 Hub connection",
+        "description": "Change the hub address, password, or app version. The settings are accepted only if the same hub responds.",
+        "data": {
+          "host": "Host",
+          "password": "Password",
+          "app_version": "App version"
+        },
+        "data_description": {
+          "host": "The hub IP address or local hostname.",
+          "password": "The factory password is pre-filled. Enter the configured password if it was changed.",
+          "app_version": "The Norman app version string sent to the hub."
         }
       }
-    },
-    "error": {
-      "cannot_connect": "Could not connect to the Norman Gen 1 hub. Check the IP address and network access.",
-      "invalid_auth": "The hub rejected the password.",
-      "no_devices": "The hub responded, but no rooms or shutter devices were discovered.",
-      "unknown": "Unexpected error"
-    },
-    "abort": {
-      "already_configured": "This hub is already configured"
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Norman Gen 1 Hub options",
-        "description": "Adjust plantation shutter direction defaults. Selecting a room also applies to its panels; selecting a panel only applies to that panel.",
+        "description": "Adjust plantation shutter movement profiles. Selecting a room also applies to its panels; selecting a panel applies only to that panel.",
         "data": {
-          "tilt_open_targets": "Open to position 37",
-          "reversed_close_targets": "Close to position 100"
+          "tilt_open_targets": "Use tilt-shutter open position 37",
+          "reversed_close_targets": "Close toward position 100"
+        },
+        "data_description": {
+          "tilt_open_targets": "Treat both end stops as closed and map Home Assistant 100% open to the visual-open louver position.",
+          "reversed_close_targets": "Use the position-100 end stop as closed. A safe visual-open target is applied automatically."
         }
       }
+    }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "The Norman Gen 1 hub could not be reached."
+    },
+    "command_not_confirmed": {
+      "message": "The Norman Gen 1 hub did not confirm the shutter command."
+    },
+    "invalid_auth": {
+      "message": "The Norman Gen 1 hub rejected the configured password."
+    },
+    "session_rejected": {
+      "message": "The Norman Gen 1 hub rejected the control session after it was retried."
+    },
+    "unsupported_position": {
+      "message": "This room has no discovered panel levels, so its nonstandard shutter position cannot be controlled safely."
+    },
+    "wrong_hub": {
+      "message": "The configured address now points to a different Norman hub."
     }
   }
 }

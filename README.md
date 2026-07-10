@@ -1,172 +1,196 @@
-# Norman Gen 1 Hub Home Assistant Integration
+# Norman Gen 1 Hub for Home Assistant
 
-Local Home Assistant custom integration for Norman Gen 1 shutter/blind hubs.
+A local-polling Home Assistant integration for Norman Gen 1 shutter and blind hubs.
 
-This project was created because I could not get a Gen 2 hub to test with, and the existing public options I found were aimed at newer hubs. It works with my Gen 1 hub, but the API was inferred from local network traffic, so other Gen 1 firmware versions or regional hub variants may behave differently.
+The Gen 1 protocol was inferred from local network traffic and verified against a real hub. It is not affiliated with or supported by Norman. Gen 2 hubs are not supported unless they expose the same local endpoints.
 
-## Features
+## What it provides
 
-- Local polling and local commands, with no cloud dependency for shutter control.
-- Creates `cover` entities for each room returned by the hub.
-- Creates `cover` entities for each room group/level, which is useful for plantation shutter panels.
-- Discovers room, shutter, and group IDs from the hub during setup; no captured device IDs are hardcoded.
-- Supports open, close, and set position.
-- Uses a mid-position open target for tilt-style plantation shutter rooms when the hub reports those rooms as needing one, so `open` does not drive the louvers through open and closed again.
-- Lets users override plantation shutter open/close direction per room or panel from the integration Configure screen.
-- Keeps cover controls available while shutters are moving, then refreshes after a 10 second settle period.
-- Raises Home Assistant errors when the hub cannot be reached or does not confirm a control command.
-- Includes local brand assets for Home Assistant/HACS.
+- One `cover` entity for every room.
+- One `cover` entity for every discovered room group or plantation-shutter panel.
+- Open, close, and target-position control.
+- Safe position mapping for conventional and tilt-style shutters.
+- Dynamic addition of rooms and panels discovered after setup.
+- Reauthentication, connection reconfiguration, translated errors, and privacy-safe diagnostics.
+- Local communication only; shutter control has no cloud dependency.
 
-## What It Talks To
+Home Assistant 2024.11.0 or newer is required.
 
-The integration uses the local Gen 1 HTTP API exposed by the hub:
+## Factory password
 
-- `POST /cgi-bin/cgi/GatewayLogin`
-- `POST /cgi-bin/cgi/getRoomInfo`
-- `POST /cgi-bin/cgi/getWindowInfo`
-- `POST /cgi-bin/cgi/RemoteControl`
-
-Gen 2 hubs are not supported by this integration unless they expose the same Gen 1 endpoints.
-
-## Finding Your Hub IP Address
-
-You need the hub's local IP address before adding the integration.
-
-Good ways to find it:
-
-- Check your router, firewall, or Wi-Fi controller client list. Look for a Norman hub, a hostname starting with `NORMANHUB`, or a device you can open in a browser on port `80`.
-- In the Norman app, check whether the hub details show its network address.
-- From a computer on the same network, inspect your ARP table:
-
-```powershell
-arp -a
-```
-
-- If you have `nmap`, scan your local subnet and then try the likely addresses in a browser:
-
-```bash
-nmap -sn 192.168.1.0/24
-```
-
-Replace `192.168.1.0/24` with your own LAN subnet. Common examples are `192.168.0.0/24`, `192.168.1.0/24`, or `10.0.0.0/24`.
-
-Once you think you have the IP, visit:
-
-```text
-http://<hub-ip>/
-```
-
-If the Norman hub web page loads, use that IP in Home Assistant.
-
-## Password
-
-Many Gen 1 hubs appear to use this default local password:
+The Norman Gen 1 factory password is:
 
 ```text
 123456789
 ```
 
-If that does not work, use the password configured for your hub in the Norman app or hub settings.
+That value is intentionally kept in this repository and pre-filled in the setup, reauthentication, and reconfiguration forms. Replace it only if the hub password has been changed from the factory value.
 
-## HACS Installation
+## Security note
 
-Use this link if you already have HACS installed:
+The Gen 1 hub exposes an HTTP API rather than HTTPS. The password and commands therefore travel over unencrypted HTTP on the local network. Keep the hub and Home Assistant on a trusted LAN or isolated IoT network; do not expose the hub API to the internet.
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Herbertmt978&repository=Norman_Gen1_HA_Integration&category=integration)
+## Supported protocol
 
-Or add it by hand:
+The integration uses these local endpoints:
 
-1. In Home Assistant, open HACS.
-2. Go to the three-dot menu and choose **Custom repositories**.
-3. Add this repository URL:
+- `GatewayLogin`
+- `getRoomInfo`
+- `getWindowInfo`
+- `RemoteControl`
+- `AdminLogout` and `GatewayLogout`
 
-```text
-https://github.com/Herbertmt978/Norman_Gen1_HA_Integration
+Every operation is serialized as one login → request(s) → logout transaction. This matters because the hub behaves as a single-session device and concurrent sessions can invalidate one another.
+
+## Installation with HACS
+
+[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Herbertmt978&repository=Norman_Gen1_HA_Integration&category=integration)
+
+Alternatively:
+
+1. Open HACS and choose **Custom repositories**.
+2. Add `https://github.com/Herbertmt978/Norman_Gen1_HA_Integration` as an **Integration**.
+3. Install **Norman Gen 1 Hub**.
+4. Restart Home Assistant.
+5. Open **Settings → Devices & services → Add integration** and search for **Norman Gen 1 Hub**.
+
+For a manual installation, copy `custom_components/norman_gen1` into Home Assistant's `custom_components` directory and restart Home Assistant.
+
+## Setup
+
+Enter:
+
+- **Host:** the hub's IP address or local hostname. A bare host, optional port, or root `http://` URL is accepted. HTTPS is rejected because the Gen 1 hub protocol is HTTP-only; credentials, paths, queries, and fragments are also rejected.
+- **Password:** pre-filled with the factory password `123456789`.
+- **App version:** defaults to `2.11.21`, the version string sent to the hub.
+
+Setup logs in and verifies that the endpoint returns usable room or shutter data. The returned hub ID becomes the config-entry, device, and entity identity. A later response from a different hub is rejected before data is read or a command is sent.
+
+### Finding the hub
+
+Check the client list in your router or network controller for a Norman device or a hostname beginning with `NORMANHUB`. You can also inspect the local ARP table:
+
+```powershell
+arp -a
 ```
 
-4. Set the category to **Integration**.
-5. Install **Norman Gen 1 Hub**.
-6. Restart Home Assistant.
-7. Go to **Settings -> Devices & services -> Add integration**.
-8. Search for **Norman Gen 1 Hub**.
-9. Enter the hub IP address, password, and app version.
+Or scan the appropriate LAN subnet:
 
-The default app version is `2.11.21`. Leave it as-is unless you know your hub expects something else.
+```bash
+nmap -sn 192.168.1.0/24
+```
 
-During setup the integration logs into the hub and scans `getRoomInfo` and `getWindowInfo`. Those responses are used to build the Home Assistant entities, so hub-specific IDs such as room IDs, shutter IDs, group IDs, and levels should be picked up dynamically.
+Opening `http://<hub-address>/` in a browser can help confirm the address.
 
-## Plantation Shutter Direction Options
+## Position behavior
 
-The integration includes tested plantation shutter defaults, but different Gen 1 hubs or motor pairings may report the same style with a different physical direction.
+Home Assistant always exposes positions as `0%` closed to `100%` visually open. The hub's raw movement range is mapped onto that convention:
 
-To adjust this after setup:
+| Shutter profile | Home Assistant closed | Home Assistant open |
+|---|---:|---:|
+| Conventional | Hub position `0` | Hub position `100` |
+| Tilt styles 2 and 3 | Hub position `0` | Visual-open position `37` |
+| Reversed tilt style 13 | Hub position `100` | Visual-open position `37` |
 
-1. Go to **Settings -> Devices & services**.
-2. Open **Norman Gen 1 Hub**.
-3. Choose **Configure**.
-4. Use **Open to position 37** for rooms or panels where Home Assistant's open command should stop at the visual open louver angle.
-5. Use **Close to position 100** for rooms or panels where the close direction is reversed.
+For tilt shutters, either physical end stop can represent closed louvers. The integration does not learn an open target from a transient in-motion position.
 
-Selecting a room applies to that room entity and all of its panel/group entities. Selecting a panel only changes that panel. The `open_position` and `close_position` entity attributes show the positions Home Assistant will send.
+Open **Configure** on the integration to override the tilt-open or reversed-close profile for a room or individual panel. A room selection applies to its panels. Explicit choices are remembered, while a newly discovered room still receives its safe automatic profile.
 
-## Manual Installation
+If a room has no usable panel levels, only room-wide commands that the hub can represent safely are exposed. In particular, a reversed `100` close target is never sent through the hub's `fullopen` fallback.
 
-Copy `custom_components/norman_gen1` into your Home Assistant `custom_components` folder and restart Home Assistant.
+## Automations
 
-## Entity Names
+The integration registers no custom actions, triggers, or conditions. Use Home Assistant's standard `cover` actions and state triggers/conditions. For example, this automation moves a Norman cover to 35% each evening:
 
-The hub assigns numeric IDs to rooms and panels, but Home Assistant entity names are based on the room and group names returned by `getRoomInfo`.
+```yaml
+alias: Set Norman shutters for the evening
+triggers:
+  - trigger: time
+    at: "19:30:00"
+actions:
+  - action: cover.set_cover_position
+    target:
+      entity_id: cover.living_room_shutters
+    data:
+      position: 35
+```
 
-If the names look odd in Home Assistant, check how rooms and groups are named in the Norman app. The integration does not assume fixed names like "Room 1", "Room 2", or "Office"; it uses whatever the hub reports.
+Typical use cases include scheduled privacy positions, closing rooms when everyone leaves, and opening selected panels at sunrise. State-based automation conditions should allow for `unknown` or `unavailable` while a panel position or the hub cannot be read.
 
-## Known Limitations
+## Data updates and availability
 
-- Tested against one Gen 1 hub only.
-- Gen 2 hubs are untested and likely need a different API.
-- Some firmware versions may return different field names or command responses.
-- The hub can acknowledge a command even when a shutter motor does not physically move. If the official Norman app also cannot move that room or panel, check hub placement, RF range, motor battery, and pairing before troubleshooting this integration.
-- A handheld Norman remote moving a shutter does not prove that the hub can move it. The handheld remote may be paired directly with the motor while the hub has a stale pairing, poor range, or a different room/panel mapping.
-- BroadLink-style RF learning is not a guaranteed fallback. If an RM Pro stays in learning mode while the shutter still responds to the Norman remote, the Norman remote is probably using a frequency or protocol the BroadLink cannot learn.
-- If setup cannot reach the hub, authentication fails, or the hub returns no rooms/shutters, Home Assistant will show a setup error.
-- If a command is sent but the hub does not confirm it, Home Assistant will raise a service error instead of silently assuming success.
-- The hub can acknowledge a command before shutters finish moving, so this integration assumes the requested position for 10 seconds before polling again.
-- Room-level intermediate positions are applied by sending the same target position to each room group/level.
-- Some plantation shutter motors use both end stops as closed louver angles. On the tested hub, Lounge, Bedroom, and Office needed position `37` as the visual open target. The integration now keeps tested room styles on fixed targets so transient in-motion positions do not get remembered by mistake.
-- Close uses position `0` for the tested Lounge and Bedroom styles. The tested Office style closes in the opposite direction, so it uses position `100` for close.
+- The hub is polled every 60 seconds.
+- Room metadata and shutter state are fetched in one serialized authenticated transaction.
+- A rejected session is retried once with a fresh login.
+- Authentication failures start Home Assistant's reauthentication flow.
+- Communication, malformed-data, empty-snapshot, and hub-identity failures make entities unavailable without deleting their last known registry entries.
+- New rooms and groups are added dynamically after a successful poll.
+- After a command, the requested state is shown optimistically for 10 seconds before a refresh.
 
-Issues and packet captures from other Gen 1 hubs are welcome, especially if a hub returns different room, group, or window data.
+## Reauthentication and reconfiguration
+
+When the saved password is rejected, Home Assistant starts reauthentication and pre-fills the factory password. The replacement is accepted only if the same hub responds.
+
+Use **Reconfigure** to change the host, password, or app version. A host change is accepted only when Home Assistant can compare stable hub IDs. A legacy entry that has only a host-based identity must first reconnect at its old address so the hub ID can be learned; otherwise remove and add the integration again.
+
+## Diagnostics and privacy
+
+Downloaded diagnostics include normalized counts, positions, styles, movement options, and a small whitelist of safe firmware/status fields. They exclude the host, password, hub ID, hub name, room/window names, raw device payloads, and all unknown login-payload fields.
+
+## Removal
+
+Remove the config entry from **Settings → Devices & services**. Home Assistant unloads the cover platform, stops coordinator refreshes, waits for any active transaction, logs out, and releases the client. Remove the HACS repository separately if the integration is no longer required.
+
+## Troubleshooting
+
+- **Cannot connect:** confirm the address is reachable from the Home Assistant host and that TCP port 80 is not blocked.
+- **Invalid authentication:** try the factory password `123456789` unless the hub password was changed.
+- **No devices:** confirm rooms and shutters are visible to the official Norman app and paired with the hub.
+- **Command not confirmed:** check hub RF range, motor battery, and pairing. A handheld remote can work even when the hub's pairing or range is wrong.
+- **Wrong direction:** use the per-room or per-panel movement-profile options.
+- **Official app stops working while Home Assistant polls:** update to the latest integration version; all transactions now log out and are serialized.
+
+## Known limitations
+
+- Hardware testing is currently limited to one Gen 1 hub; payloads from other firmware and regional variants are welcome.
+- The hub can acknowledge a command even if a motor does not physically move.
+- Room-level positions are implemented by sending the target to every discovered group level.
+- Entity display names are learned when entities are first created. Rename entities in Home Assistant if hub-side names later change.
+- Gen 2 compatibility is not claimed.
+
+## Development and verification
+
+The repository keeps protocol tests separate from tests that run through a real Home Assistant instance. CI enforces current Home Assistant's Ruff rules and at least 95% combined branch coverage, then executes the public-behavior suite on both Home Assistant 2024.11 and the current release.
+
+```bash
+python -m pip install -r requirements_test.txt
+ruff check .
+ruff format --check .
+pytest tests -q
+```
+
+Real Home Assistant tests use `requirements_ha_minimum.txt` or `requirements_ha_current.txt` and run `pytest ha_tests -q` on Linux.
+
+An eventual Home Assistant Core submission will also require extracting the protocol client into a typed asynchronous PyPI package, adding the Core-specific manifest/quality-scale files, and preparing separate documentation and brands pull requests. The integration code and behavioral tests are structured to make that extraction mechanical rather than architectural.
 
 ## Changelog
 
+### 0.2.0
+
+- Reworked the integration around a typed config-entry coordinator and shared entity base.
+- Serialized complete hub transactions and validation against the same runtime lock.
+- Added permanent hub-identity pinning, reauthentication, safe reconfiguration, dynamic discovery, and shutdown coordination.
+- Isolated hub cookies from Home Assistant's shared session and added upgrade-safe option, entity, and device registry migrations.
+- Corrected conventional, tilt, and reversed-tilt position semantics and blocked unsafe no-level fallbacks.
+- Hardened response parsing, authentication/session classification, command confirmation, diagnostics privacy, and host validation.
+- Added real Home Assistant tests across the declared minimum and current versions, current-Core linting, and a 95% combined coverage gate.
+- Kept `123456789` as the documented and pre-filled factory password.
+- Raised the minimum Home Assistant version to 2024.11.0.
+
 ### 0.1.12
 
-- Added a one-time session reset when `GatewayLogin` returns the hub's Cherokee `500 Internal Server Error` page. The integration now calls `AdminLogout` and `GatewayLogout` and retries login once, which recovers hubs that get stuck with a stale local CGI session.
+- Added a one-time session reset and retry when `GatewayLogin` returns the hub's stale-session HTTP 500 page.
 
-### 0.1.7
+### 0.1.7–0.1.11
 
-- Fixed room-level open and close commands for hubs where Norman's `fullopen`/`fullclose` room command reports success but does not move every shutter. Room entities now send the same group/level commands used by the panel entities, using discovered group levels and panel model values.
-- Added a focused unit test for room-level control so room close/open continues to use discovered group commands.
-
-### 0.1.8
-
-- Log out of the hub after setup checks, polling, and control commands so Home Assistant does not hold the Gen 1 hub session open and block the Norman phone app.
-- Added troubleshooting guidance for rooms or panels that do not move in either Home Assistant or the official Norman app.
-
-### 0.1.9
-
-- Added tilt-style plantation shutter open-position handling. Rooms reported by the hub with tested tilt styles now use position `37` for `open`, because `100` can drive the louvers past open and closed again. This covers the tested Lounge, Bedroom, and Office room styles.
-- Room and panel entities expose the `open_position` attribute so users can see which open target is being used.
-
-### 0.1.10
-
-- Corrected the tested Office room style so it keeps using `100` for `open`; Office open was already working correctly.
-- Added an explicit `close_position` attribute and kept close at `0` for the tested room styles.
-- Prevented transient learned positions from overriding known tested room styles while shutters are moving.
-
-### 0.1.11
-
-- Corrected the tested Office plantation shutter style after live testing showed `100` was the close direction, not the visual open position.
-- Office-style shutters now use position `37` for open and position `100` for close.
-- Lounge and Bedroom tested styles continue to use position `37` for open and position `0` for close.
-- Added a Configure screen so users can choose which rooms or panels open to position `37` and which close to position `100`.
-- Treat either end stop as closed for tilt-style plantation shutters, so reversed shutters do not show as open when they are closed at position `100`.
+- Added group-level room control, transaction logout, plantation-shutter position handling, reversed close support, and configurable room/panel movement profiles.

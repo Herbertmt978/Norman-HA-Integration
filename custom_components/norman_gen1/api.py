@@ -1,22 +1,29 @@
+"""Async client for the local Norman Gen 1 hub protocol."""
+
 from __future__ import annotations
 
 import asyncio
-import logging
+from collections.abc import AsyncIterator, Iterable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Iterable
+from http.cookies import SimpleCookie
+import logging
+import math
+from typing import Any
 
 import aiohttp
 
-from .const import DEFAULT_APP_VERSION
-
 _LOGGER = logging.getLogger(__name__)
+DEFAULT_APP_VERSION = "2.11.21"
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
 DEFAULT_OPEN_POSITION = 100
 DEFAULT_TILT_OPEN_POSITION = 37
 DEFAULT_CLOSE_POSITION = 0
 REVERSED_CLOSE_POSITION = 100
 TILT_ROOM_STYLES = {2, 3, 13}
 REVERSED_CLOSE_ROOM_STYLES = {13}
-FIXED_ROOM_STYLES = TILT_ROOM_STYLES
+REMOTE_SUCCESS_KEYS = ("result", "status", "success")
+HUB_TEXT_FIELDS = ("hubName", "swVer", "firmwareVersion", "version", "status")
 
 
 def room_target_id(room_id: int) -> str:
@@ -29,7 +36,9 @@ def group_target_id(room_id: int, level: int) -> str:
     return f"group:{int(room_id)}:{int(level)}"
 
 
-def target_override_enabled(targets: Iterable[str], room_id: int, level: int | None = None) -> bool:
+def target_override_enabled(
+    targets: Iterable[str], room_id: int, level: int | None = None
+) -> bool:
     """Return whether an options target list applies to this room or group.
 
     A selected room target applies to both the room entity and all of its group
@@ -41,11 +50,13 @@ def target_override_enabled(targets: Iterable[str], room_id: int, level: int | N
     return level is not None and group_target_id(room_id, level) in target_set
 
 
-def position_is_closed(position: int, open_position: int, close_position: int) -> bool:
+def position_is_closed(
+    position: int, close_position: int, *, closes_at_both_ends: bool = False
+) -> bool:
     """Return whether a reported position should be treated as closed."""
-    if 0 < open_position < 100:
+    if closes_at_both_ends:
         return position <= 0 or position >= 100
-    if close_position >= open_position:
+    if close_position >= 100:
         return position >= close_position
     return position <= close_position
 
@@ -62,6 +73,22 @@ class InvalidAuth(NormanGen1Error):
     """Raised when the hub rejects the password."""
 
 
+class InvalidSession(NormanGen1Error):
+    """Raised when the hub rejects an authenticated session."""
+
+
+class UnexpectedHub(NormanGen1Error):
+    """Raised when an authenticated endpoint no longer identifies as the configured hub."""
+
+    def __init__(self, expected_hub_id: str, actual_hub_id: str) -> None:
+        """Initialize an identity mismatch with safe, non-credential identifiers."""
+        super().__init__(
+            f"Expected hub {expected_hub_id!r}, received {actual_hub_id!r}"
+        )
+        self.expected_hub_id = expected_hub_id
+        self.actual_hub_id = actual_hub_id
+
+
 class NoDevicesFound(NormanGen1Error):
     """Raised when the hub responds but returns no controllable devices."""
 
@@ -72,6 +99,8 @@ class CannotControl(NormanGen1Error):
 
 @dataclass(slots=True)
 class NormanRoom:
+    """Normalized room metadata returned by a Norman hub."""
+
     id: int
     name: str
     group_names: list[str]
@@ -80,14 +109,26 @@ class NormanRoom:
 
 @dataclass(slots=True)
 class NormanWindow:
+    """Normalized shutter metadata and state returned by a Norman hub."""
+
     id: int
     name: str
     room_id: int
     level: int
     group_id: int | None
     position: int | None
+    model: int
     battery: str | None
     raw: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class PositionProfile:
+    """Map Home Assistant cover positions to one Norman movement branch."""
+
+    open_position: int
+    close_position: int
+    closes_at_both_ends: bool
 
 
 class NormanGen1Api:
@@ -99,26 +140,59 @@ class NormanGen1Api:
         host: str,
         password: str,
         app_version: str = DEFAULT_APP_VERSION,
+        *,
+        expected_hub_id: str | None = None,
+        transaction_lock: asyncio.Lock | None = None,
     ) -> None:
+        """Initialize the client without opening a connection."""
         self._session = session
-        self.host = host.strip().removeprefix("http://").removeprefix("https://").strip("/")
+        self.host = (
+            host.strip().removeprefix("http://").removeprefix("https://").strip("/")
+        )
         self.password = password
         self.app_version = app_version
         self._session_cookie: str | None = None
+        self._transaction_lock = transaction_lock or asyncio.Lock()
+        self._expected_hub_id = expected_hub_id
         self.hub_info: dict[str, Any] = {}
 
     @property
     def base_url(self) -> str:
+        """Return the hub CGI endpoint root."""
         return f"http://{self.host}/cgi-bin/cgi"
 
     @property
     def hub_id(self) -> str:
+        """Return the authenticated hub ID, falling back to its stable host."""
         return str(self.hub_info.get("hubId") or self.host)
 
+    @property
+    def transaction_lock(self) -> asyncio.Lock:
+        """Return the lock that serializes the hub's single-session protocol."""
+        return self._transaction_lock
+
+    def pin_hub_id(self, hub_id: str) -> None:
+        """Require all future logins to identify as the verified hub."""
+        hub_id = str(hub_id)
+        if self._expected_hub_id is not None and hub_id != self._expected_hub_id:
+            raise UnexpectedHub(self._expected_hub_id, hub_id)
+        self._expected_hub_id = hub_id
+
+    @asynccontextmanager
+    async def authenticated_session(self) -> AsyncIterator[dict[str, Any]]:
+        """Serialize one complete login, operation, and logout transaction."""
+        async with self._transaction_lock:
+            try:
+                yield await self.login()
+            finally:
+                await self.logout()
+
     async def login(self) -> dict[str, Any]:
+        """Authenticate and return the hub identity payload."""
+        self._session_cookie = None
         payload = {"password": self.password, "app_version": self.app_version}
         try:
-            data, headers = await self._post("GatewayLogin", payload, require_session=False)
+            data = await self._post("GatewayLogin", payload, require_session=False)
         except CannotConnect as err:
             if not _is_gateway_login_server_error(err):
                 raise
@@ -127,22 +201,33 @@ class NormanGen1Api:
                 self.host,
             )
             await self.logout(force=True)
-            data, headers = await self._post("GatewayLogin", payload, require_session=False)
+            data = await self._post("GatewayLogin", payload, require_session=False)
         if "errorCode" in data:
-            if data.get("errorCode") == -13:
-                raise InvalidAuth("Hub rejected the password")
-            raise CannotConnect(f"Hub returned errorCode {data.get('errorCode')}")
-        cookie = headers.get("Set-Cookie") or headers.get("set-cookie")
-        if cookie:
-            self._session_cookie = cookie.split(";", 1)[0]
-        if not self._session_cookie:
-            session_header = headers.get("session") or headers.get("Session")
-            if session_header:
-                self._session_cookie = session_header.split(";", 1)[0]
-        self.hub_info = data
-        return data
+            error_code = _as_int(data.get("errorCode"))
+            if error_code is None or error_code != 0:
+                raise CannotConnect(
+                    "Hub returned a malformed or nonzero login errorCode"
+                )
+        actual_hub_id = self.host
+        normalized_info: dict[str, Any] = {}
+        if "hubId" in data and data.get("hubId") not in (None, ""):
+            parsed_hub_id = _as_identifier(data.get("hubId"))
+            if parsed_hub_id is None:
+                raise CannotConnect("Hub returned a malformed hubId")
+            actual_hub_id = parsed_hub_id
+            normalized_info["hubId"] = parsed_hub_id
+        if self._expected_hub_id is not None and actual_hub_id != self._expected_hub_id:
+            raise UnexpectedHub(self._expected_hub_id, actual_hub_id)
+        for key in HUB_TEXT_FIELDS:
+            if (value := _as_display_text(data.get(key))) is not None:
+                normalized_info[key] = value
+        if "errorCode" in data:
+            normalized_info["errorCode"] = _as_int(data.get("errorCode"))
+        self.hub_info = normalized_info
+        return normalized_info
 
     async def logout(self, *, force: bool = False) -> None:
+        """Best-effort logout of the current low-level session."""
         if not force and not self._session_cookie:
             return
         try:
@@ -154,49 +239,71 @@ class NormanGen1Api:
         finally:
             self._session_cookie = None
 
+    async def async_close(self) -> None:
+        """Wait for any active transaction, then close the hub session."""
+        async with self._transaction_lock:
+            await self.logout()
+
     async def get_rooms(self) -> list[NormanRoom]:
-        data, _ = await self._post("getRoomInfo", {})
+        """Return parsed rooms from the current authenticated session."""
+        data = await self._post("getRoomInfo", {})
         rooms = []
-        for room in data.get("rooms", []):
-            room_id = _as_int(room.get("Id", room.get("id")))
-            if room_id is None:
-                _LOGGER.warning("Skipping Norman room without a numeric Id: %s", room)
+        for room in _mapping_records(data, "rooms"):
+            room_id = _first_int(room, "Id", "id")
+            if room_id is None or room_id < 0:
+                _LOGGER.warning("Skipping Norman room with a missing or invalid Id")
                 continue
+            raw_group_names = room.get("groupname")
+            if raw_group_names is None:
+                group_names: list[str] = []
+            elif isinstance(raw_group_names, list):
+                group_names = [
+                    name
+                    for value in raw_group_names
+                    if (name := _as_display_text(value)) is not None
+                ]
+            else:
+                group_names = (
+                    [group_name]
+                    if (group_name := _as_display_text(raw_group_names)) is not None
+                    else []
+                )
             rooms.append(
                 NormanRoom(
                     id=room_id,
-                    name=str(room.get("Name") or room_id),
-                    group_names=[str(name) for name in room.get("groupname", [])],
+                    name=_as_display_text(room.get("Name")) or str(room_id),
+                    group_names=group_names,
                     raw=room,
                 )
             )
         return rooms
 
     async def get_windows(self) -> list[NormanWindow]:
-        data, _ = await self._post("getWindowInfo", {})
+        """Return parsed shutters from the current authenticated session."""
+        data = await self._post("getWindowInfo", {})
         return self._parse_windows(data)
 
-    async def get_group_position(self, room_id: int, level: int) -> int | None:
-        data, _ = await self._post(
-            "getWindowInfo",
-            {"action": "group_position", "Id": room_id, "Lid": level},
-        )
-        windows = self._parse_windows(data, default_room_id=room_id, default_level=level)
-        positions = [window.position for window in windows if window.position is not None]
-        if not positions:
-            return None
-        return round(sum(positions) / len(positions))
-
     async def full_open_room(self, room_id: int) -> None:
+        """Send the hub's room-wide full-open command."""
         await self._remote_control({"type": "fullopen", "action": 2, "id": room_id})
 
     async def full_close_room(self, room_id: int) -> None:
+        """Send the hub's room-wide full-close command."""
         await self._remote_control({"type": "fullclose", "action": 2, "id": room_id})
 
-    async def set_group_position(self, room_id: int, level: int, position: int, model: int = 1) -> None:
+    async def set_group_position(
+        self, room_id: int, level: int, position: int, model: int = 1
+    ) -> None:
+        """Move one discovered room level to a raw hub position."""
         position = max(0, min(100, int(position)))
         await self._remote_control(
-            {"type": "level", "Lid": int(level), "id": int(room_id), "action": position, "model": model}
+            {
+                "type": "level",
+                "Lid": int(level),
+                "id": int(room_id),
+                "action": position,
+                "model": model,
+            }
         )
 
     async def set_room_position(
@@ -206,6 +313,7 @@ class NormanGen1Api:
         position: int,
         models_by_level: dict[int, int] | None = None,
     ) -> None:
+        """Move each discovered room level to a raw hub position."""
         position = max(0, min(100, int(position)))
         unique_levels = sorted(set(levels))
         if not unique_levels:
@@ -215,24 +323,38 @@ class NormanGen1Api:
             if position <= 0:
                 await self.full_close_room(room_id)
                 return
-            raise CannotControl(f"Cannot set room {room_id} to {position}% because no group levels were discovered")
+            raise CannotControl(
+                f"Cannot set room {room_id} to {position}% because no group levels were discovered"
+            )
 
-        _LOGGER.debug("Controlling Norman room %s via %s group level command(s)", room_id, len(unique_levels))
-        for level in unique_levels:
+        _LOGGER.debug(
+            "Controlling Norman room %s via %s group level command(s)",
+            room_id,
+            len(unique_levels),
+        )
+        for index, level in enumerate(unique_levels):
             model = models_by_level.get(level, 1) if models_by_level else 1
             await self.set_group_position(room_id, level, position, model)
-            await asyncio.sleep(0.15)
+            if index < len(unique_levels) - 1:
+                await asyncio.sleep(0.15)
 
     async def _remote_control(self, payload: dict[str, Any]) -> dict[str, Any]:
-        data, _ = await self._post("RemoteControl", payload)
-        if _as_int(data.get("errorCode")) not in (None, 0):
-            message = f"RemoteControl returned errorCode {data.get('errorCode')}"
-            _LOGGER.warning("%s for payload %s: %s", message, payload, data)
+        data = await self._post("RemoteControl", payload, allow_error_response=True)
+        error_code = _as_int(data.get("errorCode"))
+        if "errorCode" in data and error_code is None:
+            message = "RemoteControl returned a malformed errorCode"
+            _LOGGER.warning("%s", message)
             raise CannotControl(message)
-        confirmed = _as_int(data.get("errorCode")) == 0 or any(_is_success_value(value) for value in data.values())
+        if error_code not in (None, 0):
+            message = f"RemoteControl returned errorCode {error_code}"
+            _LOGGER.warning("%s", message)
+            raise CannotControl(message)
+        confirmed = error_code == 0 or any(
+            _is_success_value(data.get(key)) for key in REMOTE_SUCCESS_KEYS
+        )
         if not confirmed:
-            message = f"RemoteControl did not confirm command: {data}"
-            _LOGGER.warning("%s for payload %s", message, payload)
+            message = "RemoteControl did not contain a recognized success indicator"
+            _LOGGER.warning("%s", message)
             raise CannotControl(message)
         return data
 
@@ -243,7 +365,8 @@ class NormanGen1Api:
         *,
         require_session: bool = True,
         auto_login: bool = True,
-    ) -> tuple[dict[str, Any], dict[str, str]]:
+        allow_error_response: bool = False,
+    ) -> dict[str, Any]:
         if require_session and auto_login and not self._session_cookie:
             await self.login()
 
@@ -256,25 +379,46 @@ class NormanGen1Api:
             headers["Cookie"] = self._session_cookie
         url = f"{self.base_url}/{endpoint}"
         try:
-            async with self._session.post(url, json=payload, headers=headers, timeout=20) as response:
-                text = await response.text()
+            async with self._session.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=False,
+            ) as response:
+                if response.status in (401, 403):
+                    if require_session:
+                        raise InvalidSession(
+                            f"{endpoint} rejected the authenticated session"
+                        )
+                    raise InvalidAuth("Hub rejected the password")
                 if response.status != 200:
-                    raise CannotConnect(f"{endpoint} returned HTTP {response.status}: {text[:200]}")
-                headers_out = {key: value for key, value in response.headers.items()}
-                session_header = response.headers.get("session") or response.headers.get("Set-Cookie")
-                if session_header and "Session=" in session_header:
-                    self._session_cookie = session_header.split(";", 1)[0]
+                    raise CannotConnect(f"{endpoint} returned HTTP {response.status}")
+                if session_cookie := _session_cookie_from_headers(response.headers):
+                    self._session_cookie = session_cookie
                 try:
                     data = await response.json(content_type=None)
-                except Exception as err:  # noqa: BLE001
-                    raise CannotConnect(f"{endpoint} returned non-JSON: {text[:200]}") from err
-        except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError) as err:
+                except Exception as err:
+                    raise CannotConnect(
+                        f"{endpoint} returned a non-JSON response"
+                    ) from err
+        except (aiohttp.ClientError, TimeoutError) as err:
             raise CannotConnect(str(err)) from err
-        if isinstance(data, dict) and data.get("errorCode") == -13:
-            raise InvalidAuth("Hub rejected the request/session")
         if not isinstance(data, dict):
-            raise CannotConnect(f"{endpoint} returned unexpected payload: {data!r}")
-        return data, headers_out
+            raise CannotConnect(
+                f"{endpoint} returned an unexpected {type(data).__name__} payload"
+            )
+        if "errorCode" in data:
+            error_code = _as_int(data.get("errorCode"))
+            if error_code == -13:
+                if require_session:
+                    raise InvalidSession("Hub rejected the request/session")
+                raise InvalidAuth("Hub rejected the password")
+            if not allow_error_response and error_code != 0:
+                raise CannotConnect(
+                    f"{endpoint} returned a malformed or nonzero errorCode"
+                )
+        return data
 
     def _parse_windows(
         self,
@@ -284,25 +428,30 @@ class NormanGen1Api:
         default_level: int | None = None,
     ) -> list[NormanWindow]:
         windows = []
-        for window in data.get("windows", []):
-            window_id = _as_int(window.get("Id", window.get("id")))
+        for window in _mapping_records(data, "windows"):
+            window_id = _first_int(window, "Id", "id")
             if window_id is None:
-                _LOGGER.warning("Skipping Norman window without a numeric Id: %s", window)
+                _LOGGER.warning("Skipping Norman window without a numeric Id")
                 continue
-            room_id = window.get("roomId", window.get("RId", default_room_id))
-            level = window.get("Level", window.get("Lid", default_level))
-            position = window.get("position")
+            room_id = _first_int(window, "roomId", "RId", default=default_room_id)
+            level = _first_int(window, "Level", "Lid", default=default_level)
+            position = _as_int(window.get("position"))
+            if position is not None and not 0 <= position <= 100:
+                _LOGGER.warning("Ignoring an out-of-range Norman window position")
+                position = None
             parsed_room_id = _as_int(room_id)
             parsed_level = _as_int(level)
+            parsed_model = _as_int(window.get("model"))
             windows.append(
                 NormanWindow(
                     id=window_id,
-                    name=str(window.get("Name") or window_id),
+                    name=_as_display_text(window.get("Name")) or str(window_id),
                     room_id=parsed_room_id if parsed_room_id is not None else -1,
                     level=parsed_level if parsed_level is not None else -1,
                     group_id=_as_int(window.get("groupId")),
-                    position=_as_int(position),
-                    battery=str(window["battery"]) if window.get("battery") is not None else None,
+                    position=position,
+                    model=parsed_model if parsed_model is not None else 1,
+                    battery=_as_display_text(window.get("battery")),
                     raw=window,
                 )
             )
@@ -310,12 +459,98 @@ class NormanGen1Api:
 
 
 def _as_int(value: Any) -> int | None:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value) and value.is_integer():
+            return int(value)
         return None
+    if isinstance(value, str):
+        try:
+            return int(value.strip(), 10)
+        except ValueError:
+            return None
+    return None
+
+
+def _as_identifier(value: Any) -> str | None:
+    """Return a non-empty stable scalar suitable for registry identifiers."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return value.strip() or None
+    return None
+
+
+def _as_display_text(value: Any) -> str | None:
+    """Normalize an optional scalar before exposing it to Home Assistant."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, str):
+        return " ".join(value.split()) or None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return str(value)
+    return None
+
+
+def _first_int(
+    data: dict[str, Any], *keys: str, default: int | None = None
+) -> int | None:
+    """Return the first parseable integer from equivalent hub fields."""
+    for key in keys:
+        if (value := _as_int(data.get(key))) is not None:
+            return value
+    return default
+
+
+def _mapping_records(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    """Return mapping records from a hub collection."""
+    if key not in data:
+        raise CannotConnect(f"Hub response did not contain {key}")
+    value = data[key]
+    if not isinstance(value, list):
+        raise CannotConnect(
+            f"Hub returned malformed {key}: expected a list, got {type(value).__name__}"
+        )
+    records: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            records.append(item)
+        else:
+            _LOGGER.warning(
+                "Skipping malformed Norman %s record of type %s",
+                key,
+                type(item).__name__,
+            )
+    return records
+
+
+def _session_cookie_from_headers(headers: Mapping[str, str]) -> str | None:
+    """Extract the Norman Session cookie without accepting unrelated cookies."""
+    cookie_headers: list[str] = []
+    if callable(get_all := getattr(headers, "getall", None)):
+        cookie_headers.extend(get_all("Set-Cookie", []))
+    else:
+        cookie_headers.extend(
+            value for key in ("Set-Cookie", "set-cookie") if (value := headers.get(key))
+        )
+
+    for header in cookie_headers:
+        parsed = SimpleCookie()
+        parsed.load(header)
+        if session := parsed.get("Session"):
+            return f"Session={session.value}"
+
+    if session_header := headers.get("session") or headers.get("Session"):
+        value = session_header.split(";", 1)[0]
+        return value if value.lower().startswith("session=") else f"Session={value}"
+    return None
 
 
 def _is_success_value(value: Any) -> bool:
@@ -332,16 +567,8 @@ def _is_gateway_login_server_error(err: CannotConnect) -> bool:
     return str(err).startswith("GatewayLogin returned HTTP 500")
 
 
-def remember_open_position(current: int | None, candidate: int | None) -> int | None:
-    """Remember a non-end-stop shutter position as the preferred open target."""
-    if candidate is not None and 0 < candidate < 100:
-        return candidate
-    return current
-
-
 def room_open_position(
     room_raw: dict[str, Any],
-    learned_position: int | None,
     use_tilt_open: bool | None = None,
 ) -> int:
     """Return the best open target for a room.
@@ -349,17 +576,23 @@ def room_open_position(
     Some Norman plantation shutter rooms use the middle of the travel as the
     visually open louver position, with both end stops being closed angles.
     """
-    room_style = _as_int(room_raw.get("Style"))
-    if use_tilt_open is True:
+    if room_uses_tilt_open(room_raw, use_tilt_open):
         return DEFAULT_TILT_OPEN_POSITION
-    if use_tilt_open is None and room_style in TILT_ROOM_STYLES:
-        return DEFAULT_TILT_OPEN_POSITION
-    if room_style not in FIXED_ROOM_STYLES and learned_position is not None:
-        return learned_position
     return DEFAULT_OPEN_POSITION
 
 
-def room_close_position(room_raw: dict[str, Any], use_reversed_close: bool | None = None) -> int:
+def room_uses_tilt_open(
+    room_raw: dict[str, Any], use_tilt_open: bool | None = None
+) -> bool:
+    """Return whether a room uses a mid-travel visual-open position."""
+    if use_tilt_open is not None:
+        return use_tilt_open
+    return _as_int(room_raw.get("Style")) in TILT_ROOM_STYLES
+
+
+def room_close_position(
+    room_raw: dict[str, Any], use_reversed_close: bool | None = None
+) -> int:
     """Return the close target for a room."""
     if use_reversed_close is True:
         return REVERSED_CLOSE_POSITION
@@ -368,3 +601,50 @@ def room_close_position(room_raw: dict[str, Any], use_reversed_close: bool | Non
     if _as_int(room_raw.get("Style")) in REVERSED_CLOSE_ROOM_STYLES:
         return REVERSED_CLOSE_POSITION
     return DEFAULT_CLOSE_POSITION
+
+
+def resolve_position_profile(
+    room_raw: dict[str, Any],
+    *,
+    use_tilt_open: bool | None = None,
+    use_reversed_close: bool | None = None,
+) -> PositionProfile:
+    """Resolve one safe Home Assistant-to-hub movement profile."""
+    close_position = room_close_position(room_raw, use_reversed_close)
+    uses_tilt = room_uses_tilt_open(room_raw, use_tilt_open)
+    if close_position == REVERSED_CLOSE_POSITION:
+        uses_tilt = True
+    open_position = DEFAULT_TILT_OPEN_POSITION if uses_tilt else DEFAULT_OPEN_POSITION
+    return PositionProfile(
+        open_position=open_position,
+        close_position=close_position,
+        closes_at_both_ends=uses_tilt,
+    )
+
+
+def ha_position_to_hub(position: int, profile: PositionProfile) -> int:
+    """Map a Home Assistant position onto the configured hub movement branch."""
+    position = max(0, min(100, int(position)))
+    return round(
+        profile.close_position
+        + (profile.open_position - profile.close_position) * position / 100
+    )
+
+
+def hub_position_to_ha(position: int, profile: PositionProfile) -> int | None:
+    """Map a reported hub position to Home Assistant's closed-to-open scale."""
+    position = max(0, min(100, int(position)))
+    if profile.closes_at_both_ends:
+        if not 0 < profile.open_position < 100:
+            return 0
+        if position <= profile.open_position:
+            mapped = position * 100 / profile.open_position
+        else:
+            span = 100 - profile.open_position
+            mapped = (100 - position) * 100 / span
+        return max(0, min(100, round(mapped)))
+    span = profile.open_position - profile.close_position
+    if span == 0:
+        return None
+    mapped = (position - profile.close_position) * 100 / span
+    return max(0, min(100, round(mapped)))

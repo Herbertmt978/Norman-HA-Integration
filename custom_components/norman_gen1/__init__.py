@@ -1,157 +1,135 @@
+"""The Norman Gen 1 Hub integration."""
+
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
-from datetime import timedelta
-from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.const import CONF_HOST, CONF_PASSWORD
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryError
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
-from .api import CannotConnect, InvalidAuth, NoDevicesFound, NormanGen1Api, NormanRoom, NormanWindow, remember_open_position
-from .const import CONF_APP_VERSION, DATA_API, DATA_COORDINATOR, DATA_HUB_INFO, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .api import NormanGen1Api, group_target_id, room_target_id
+from .const import (
+    CONF_APP_VERSION,
+    CONF_KNOWN_TARGETS,
+    CONF_REVERSED_CLOSE_TARGETS,
+    CONF_TILT_OPEN_TARGETS,
+    DEFAULT_APP_VERSION,
+    DOMAIN,
+    PLATFORMS,
+)
+from .coordinator import NormanConfigEntry, NormanDataUpdateCoordinator
+from .session import async_create_norman_session
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.COVER]
-NormanConfigEntry = ConfigEntry
-
-
-class NormanDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinator for Norman Gen 1 hub room/window state."""
-
-    def __init__(self, hass: HomeAssistant, api: NormanGen1Api) -> None:
-        super().__init__(
-            hass,
-            logger=_LOGGER,
-            name=DOMAIN,
-            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
-        )
-        self.api = api
-        self._open_positions_by_room: dict[int, int] = {}
-        self._open_positions_by_group: dict[tuple[int, int], int] = {}
-
-    async def _async_update_data(self) -> dict[str, Any]:
-        try:
-            return await self._fetch_data()
-        except InvalidAuth:
-            try:
-                await self.api.login()
-                return await self._fetch_data()
-            except (CannotConnect, InvalidAuth, NoDevicesFound) as err:
-                raise UpdateFailed(str(err)) from err
-        except CannotConnect as err:
-            raise UpdateFailed(f"Unable to communicate with Norman Gen 1 hub: {err}") from err
-        except NoDevicesFound as err:
-            raise UpdateFailed(str(err)) from err
-
-    async def _fetch_data(self) -> dict[str, Any]:
-        try:
-            rooms = await self.api.get_rooms()
-            windows = await self.api.get_windows()
-        finally:
-            await self.api.logout()
-        rooms_by_id = {room.id: room for room in rooms}
-        windows_by_room: dict[int, list[NormanWindow]] = defaultdict(list)
-        windows_by_group: dict[tuple[int, int], list[NormanWindow]] = defaultdict(list)
-        levels_by_room: dict[int, set[int]] = defaultdict(set)
-        for window in windows:
-            if window.room_id < 0:
-                _LOGGER.warning("Ignoring Norman window without a room id: %s", window.raw)
-                continue
-            windows_by_room[window.room_id].append(window)
-            if window.level >= 0:
-                windows_by_group[(window.room_id, window.level)].append(window)
-                levels_by_room[window.room_id].add(window.level)
-        discovered_rooms: list[NormanRoom] = list(rooms)
-        for room_id in sorted(windows_by_room):
-            if room_id not in rooms_by_id:
-                fallback_room = NormanRoom(
-                    id=room_id,
-                    name=f"Room {room_id}",
-                    group_names=[],
-                    raw={"generated_from_window_scan": True},
-                )
-                discovered_rooms.append(fallback_room)
-                rooms_by_id[room_id] = fallback_room
-        for room_id, room_windows in windows_by_room.items():
-            open_position = remember_open_position(
-                self._open_positions_by_room.get(room_id),
-                _average_position(room_windows),
-            )
-            if open_position is not None:
-                self._open_positions_by_room[room_id] = open_position
-        for group_key, group_windows in windows_by_group.items():
-            open_position = remember_open_position(
-                self._open_positions_by_group.get(group_key),
-                _average_position(group_windows),
-            )
-            if open_position is not None:
-                self._open_positions_by_group[group_key] = open_position
-        if not discovered_rooms and not windows:
-            raise NoDevicesFound("Hub responded, but no Norman rooms or shutter devices were discovered")
-        return {
-            "rooms": discovered_rooms,
-            "windows": windows,
-            "rooms_by_id": rooms_by_id,
-            "windows_by_room": dict(windows_by_room),
-            "windows_by_group": dict(windows_by_group),
-            "levels_by_room": {room_id: sorted(levels) for room_id, levels in levels_by_room.items()},
-            "open_positions_by_room": dict(self._open_positions_by_room),
-            "open_positions_by_group": dict(self._open_positions_by_group),
-        }
-
-
-def _average_position(windows: list[NormanWindow]) -> int | None:
-    positions = [window.position for window in windows if window.position is not None]
-    if not positions:
-        return None
-    return round(sum(positions) / len(positions))
-
 
 async def async_setup_entry(hass: HomeAssistant, entry: NormanConfigEntry) -> bool:
-    entry.async_on_unload(entry.add_update_listener(_async_update_options))
-
-    session = async_get_clientsession(hass)
+    """Set up a Norman Gen 1 hub from a config entry."""
+    session = async_create_norman_session(hass)
+    host = entry.data[CONF_HOST]
+    expected_hub_id = entry.unique_id if entry.unique_id not in (None, host) else None
     api = NormanGen1Api(
         session,
-        entry.data[CONF_HOST],
+        host,
         entry.data[CONF_PASSWORD],
-        entry.data.get(CONF_APP_VERSION) or "2.11.21",
+        entry.data.get(CONF_APP_VERSION) or DEFAULT_APP_VERSION,
+        expected_hub_id=expected_hub_id,
     )
 
-    coordinator = NormanDataUpdateCoordinator(hass, api)
+    coordinator = NormanDataUpdateCoordinator(hass, api, entry)
     await coordinator.async_config_entry_first_refresh()
-    room_count = len(coordinator.data["rooms"])
-    window_count = len(coordinator.data["windows"])
-    group_count = sum(len(levels) for levels in coordinator.data["levels_by_room"].values())
+
+    if entry.unique_id is not None and entry.unique_id not in {api.hub_id, host}:
+        raise ConfigEntryError(
+            translation_domain=DOMAIN,
+            translation_key="wrong_hub",
+        )
+    if entry.unique_id in (None, host) and api.hub_id != entry.unique_id:
+        await _async_migrate_registry_identity(hass, entry, host, api.hub_id)
+        hass.config_entries.async_update_entry(entry, unique_id=api.hub_id)
+    api.pin_hub_id(api.hub_id)
+    _migrate_legacy_options(hass, entry, coordinator)
+
     _LOGGER.info(
         "Discovered Norman Gen 1 hub with %s room(s), %s shutter device(s), and %s group(s)",
-        room_count,
-        window_count,
-        group_count,
+        len(coordinator.data.rooms),
+        len(coordinator.data.windows),
+        sum(len(levels) for levels in coordinator.data.levels_by_room.values()),
     )
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        DATA_API: api,
-        DATA_COORDINATOR: coordinator,
-        DATA_HUB_INFO: dict(api.hub_info),
-    }
+    entry.runtime_data = coordinator
+    entry.async_on_unload(entry.add_update_listener(_async_update_options))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
 async def _async_update_options(hass: HomeAssistant, entry: NormanConfigEntry) -> None:
+    """Reload the config entry after its options change."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: NormanConfigEntry) -> bool:
+    """Unload a Norman Gen 1 config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-    if data is not None:
-        await data[DATA_API].logout()
+    if unload_ok:
+        coordinator = entry.runtime_data
+        await coordinator.async_shutdown()
+        await coordinator.api.async_close()
     return unload_ok
+
+
+@callback
+def _migrate_legacy_options(
+    hass: HomeAssistant,
+    entry: NormanConfigEntry,
+    coordinator: NormanDataUpdateCoordinator,
+) -> None:
+    """Snapshot targets from pre-0.2 options before dynamic discovery begins."""
+    if CONF_KNOWN_TARGETS in entry.options or not any(
+        key in entry.options
+        for key in (CONF_TILT_OPEN_TARGETS, CONF_REVERSED_CLOSE_TARGETS)
+    ):
+        return
+
+    known_targets = {room_target_id(room.id) for room in coordinator.data.rooms}
+    known_targets.update(
+        group_target_id(room_id, level)
+        for room_id, levels in coordinator.data.levels_by_room.items()
+        for level in levels
+    )
+    hass.config_entries.async_update_entry(
+        entry,
+        options={**entry.options, CONF_KNOWN_TARGETS: sorted(known_targets)},
+    )
+
+
+async def _async_migrate_registry_identity(
+    hass: HomeAssistant,
+    entry: NormanConfigEntry,
+    old_hub_id: str,
+    new_hub_id: str,
+) -> None:
+    """Preserve legacy entity IDs and devices while learning a stable hub ID."""
+    device_registry = dr.async_get(hass)
+    old_identifier = (DOMAIN, old_hub_id)
+    for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
+        if old_identifier not in device.identifiers:
+            continue
+        device_registry.async_update_device(
+            device.id,
+            new_identifiers=(device.identifiers - {old_identifier})
+            | {(DOMAIN, new_hub_id)},
+        )
+
+    old_prefix = f"{old_hub_id}_room_"
+
+    @callback
+    def migrate_entity(entity: er.RegistryEntry) -> dict[str, str] | None:
+        if not entity.unique_id.startswith(old_prefix):
+            return None
+        return {"new_unique_id": f"{new_hub_id}{entity.unique_id[len(old_hub_id) :]}"}
+
+    await er.async_migrate_entries(hass, entry.entry_id, migrate_entity)
