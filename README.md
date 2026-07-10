@@ -144,6 +144,7 @@ Typical use cases include scheduled privacy positions, closing rooms when everyo
 - Communication, malformed-data, empty-snapshot, and hub-identity failures make entities unavailable without deleting their last known registry entries.
 - New rooms, groups, and physical-motor battery sensors are added dynamically after a successful poll.
 - If a known motor's correlated panel label or motor number changes, the config entry reloads once so all translated battery names remain consistent.
+- The Gen 1 control endpoint is fire-and-forget: a valid HTTP response with no explicit hub error is accepted without requiring an acknowledgement field.
 - After a command, the requested state is shown optimistically for 10 seconds before a refresh.
 
 ## Reauthentication and reconfiguration
@@ -166,7 +167,7 @@ Remove the config entry from **Settings → Devices & services**. Home Assistant
 - **Hub needs a restart / repeated HTTP 500:** the embedded Cherokee CGI service can become globally unresponsive even though the hub still answers on port 80. Restart or power-cycle the hub, wait for its status light to settle, then reload the integration. The integration drains the failed response and makes one safe recovery attempt before showing this action.
 - **Invalid authentication:** try the factory password `123456789` unless the hub password was changed.
 - **No devices:** confirm rooms and shutters are visible to the official Norman app and paired with the hub.
-- **Command not confirmed:** check hub RF range, motor battery, and pairing. A handheld remote can work even when the hub's pairing or range is wrong.
+- **Command accepted but the shutter did not move:** the hub cannot confirm RF delivery to a motor. Check hub RF range, motor battery, pairing, and the Norman USB repeaters.
 - **Wrong direction:** use the per-room or per-panel movement-profile options.
 - **Official app and Home Assistant:** both can use independent hub sessions. Update to the latest integration version so every Home Assistant transaction is serialized and logged out cleanly.
 - **Weak shutter radio signal:** keep the Norman USB repeaters powered and positioned within the proprietary RF network. ESPHome Bluetooth proxies do not extend this link.
@@ -175,7 +176,7 @@ Remove the config entry from **Settings → Devices & services**. Home Assistant
 ## Known limitations
 
 - Hardware testing is currently limited to one Gen 1 hub; payloads from other firmware and regional variants are welcome.
-- The hub can acknowledge a command even if a motor does not physically move.
+- The hub does not reliably acknowledge accepted commands and cannot confirm whether a motor physically moved. Home Assistant still reports transport, authentication, malformed-response, and explicit hub errors.
 - A room-wide broadcast is available only when all configured panel targets match the hub-native command. Mixed or non-native profiles necessarily use exact sequential group commands.
 - A panel entity represents one commandable room level. Firmware may report multiple window records for the same level; those records remain one aggregate control.
 - Battery sensors represent the individual physical window/motor records and are attached to the existing room device so the room-grouped UI remains intact.
@@ -199,6 +200,12 @@ Real Home Assistant tests use `requirements_ha_minimum.txt` or `requirements_ha_
 An eventual Home Assistant Core submission will also require extracting the protocol client into a typed asynchronous PyPI package, adding the Core-specific manifest/quality-scale files, and preparing separate documentation and brands pull requests. The integration code and behavioral tests are structured to make that extraction mechanical rather than architectural.
 
 ## Changelog
+
+### 0.3.2
+
+- Treats a valid Gen 1 `RemoteControl` HTTP response with no explicit error as accepted, matching the hub's fire-and-forget behaviour and preventing false command-failure notifications.
+- Continues to report connection, authentication, session, malformed-response, unexpected-hub, and explicit non-zero `errorCode` failures.
+- Rewords the remaining command error so it is reserved for genuine failures rather than a missing acknowledgement field.
 
 ### 0.3.1
 

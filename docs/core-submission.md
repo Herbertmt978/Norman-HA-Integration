@@ -39,6 +39,10 @@ This repository is the HACS/custom-integration release track. A Core pull reques
 
 The HACS release creates one sensor per physical `getWindowInfo` record but attaches those sensors to the existing room device. Battery display names use the same room/level join as their commandable group cover; multiple physical motors behind one level receive translated motor numbers in the normalized hub slot order, with physical window ID as the fallback and entity identity. A change to a known motor's correlated label or motor number schedules one config-entry reload rather than mutating Home Assistant's private entity-name caches. This preserves the user-facing hub → room → controls layout while group covers remain the commandable units. Revisit this explicitly with Core reviewers: separate physical child devices may be more literal, but would fragment covers from their motor diagnostics and add one device per shutter. The sensor platform consumes the cover coordinator snapshot and must never introduce a second update coordinator or polling interval.
 
+## Command response decision
+
+The Gen 1 `RemoteControl` endpoint is fire-and-forget and does not reliably include an acknowledgement field even when the shutters move. The client therefore treats a valid HTTP 200 mapping with no explicit `errorCode` as accepted. It still rejects transport, authentication, session, malformed-payload, unexpected-hub, malformed `errorCode`, and non-zero `errorCode` failures. Core-facing tests must preserve that boundary and must not claim that an accepted hub request proves RF delivery or physical motor movement.
+
 ## Companion pull requests and validation
 
 - Prepare Home Assistant documentation and brands pull requests and link them from the Core PR.

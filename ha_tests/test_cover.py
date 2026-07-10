@@ -318,7 +318,7 @@ async def test_missing_overridden_panel_prevents_room_broadcast(
     )
 
 
-async def test_unconfirmed_command_raises_translated_error(
+async def test_rejected_command_raises_translated_error(
     hass: HomeAssistant,
     setup_integration,
     mock_norman_api,
@@ -326,7 +326,7 @@ async def test_unconfirmed_command_raises_translated_error(
     """Expose a rejected hub command as a translated service error."""
     entry = setup_integration
     entity_id = _entity_id(hass, entry.entry_id, "hub-1_room_1_level_1")
-    mock_norman_api.control_error = CannotControl("not acknowledged")
+    mock_norman_api.control_error = CannotControl("explicitly rejected")
 
     with pytest.raises(HomeAssistantError) as caught:
         await hass.services.async_call(
@@ -336,7 +336,7 @@ async def test_unconfirmed_command_raises_translated_error(
             blocking=True,
         )
 
-    assert caught.value.translation_key == "command_not_confirmed"
+    assert caught.value.translation_key == "command_failed"
 
 
 async def test_identity_change_blocks_control_before_command(

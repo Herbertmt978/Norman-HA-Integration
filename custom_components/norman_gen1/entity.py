@@ -188,11 +188,11 @@ class NormanBaseCover(CoordinatorEntity[NormanDataUpdateCoordinator], CoverEntit
                 translation_key="wrong_hub",
             ) from err
         except CannotControl as err:
-            message = "Norman Gen 1 hub did not confirm the shutter command"
+            message = "Norman Gen 1 shutter command failed"
             _LOGGER.warning("%s for %s: %s", message, self.entity_id, err)
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
-                translation_key="command_not_confirmed",
+                translation_key="command_failed",
             ) from err
         await self._refresh_after_command(optimistic_position)
 

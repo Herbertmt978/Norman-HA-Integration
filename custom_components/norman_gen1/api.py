@@ -22,7 +22,6 @@ DEFAULT_CLOSE_POSITION = 0
 REVERSED_CLOSE_POSITION = 100
 TILT_ROOM_STYLES = {2, 3, 13}
 REVERSED_CLOSE_ROOM_STYLES = {13}
-REMOTE_SUCCESS_KEYS = ("remote", "result", "status", "success")
 HUB_TEXT_FIELDS = ("hubName", "swVer", "firmwareVersion", "version", "status")
 
 
@@ -107,7 +106,7 @@ class NoDevicesFound(NormanGen1Error):
 
 
 class CannotControl(NormanGen1Error):
-    """Raised when the hub rejects or fails to confirm a control command."""
+    """Raised when a control command cannot be sent or is explicitly rejected."""
 
 
 @dataclass(slots=True)
@@ -385,13 +384,6 @@ class NormanGen1Api:
             message = f"RemoteControl returned errorCode {error_code}"
             _LOGGER.warning("%s", message)
             raise CannotControl(message)
-        confirmed = error_code == 0 or any(
-            _is_success_value(data.get(key)) for key in REMOTE_SUCCESS_KEYS
-        )
-        if not confirmed:
-            message = "RemoteControl did not contain a recognized success indicator"
-            _LOGGER.warning("%s", message)
-            raise CannotControl(message)
         return data
 
     async def _post(
@@ -624,16 +616,6 @@ def _session_cookie_from_headers(headers: Mapping[str, str]) -> str | None:
         value = session_header.split(";", 1)[0]
         return value if value.lower().startswith("session=") else f"Session={value}"
     return None
-
-
-def _is_success_value(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value == 1
-    if isinstance(value, str):
-        return value.strip().lower() in {"ok", "success", "true"}
-    return False
 
 
 def _is_gateway_login_server_error(err: CannotConnect) -> bool:

@@ -597,28 +597,18 @@ class TestApiPayloadValidation(unittest.IsolatedAsyncioTestCase):
             with self.subTest(payload=payload), self.assertRaises(CannotConnect):
                 api._parse_windows(payload)
 
-    async def test_unrelated_numeric_field_does_not_confirm_remote_command(
-        self,
-    ) -> None:
-        session = FakeSession(
-            [FakeResponse(status=200, text="{}", json_data={"model": 1})]
-        )
-        api = NormanGen1Api(session, "192.0.2.10", "123456789")
-        api._session_cookie = "Session=1"
+    async def test_http_success_without_acknowledgement_is_accepted(self) -> None:
+        for payload in ({}, {"model": 1}):
+            with self.subTest(payload=payload):
+                session = FakeSession(
+                    [FakeResponse(status=200, text="{}", json_data=payload)]
+                )
+                api = NormanGen1Api(session, "192.0.2.10", "123456789")
+                api._session_cookie = "Session=1"
 
-        with self.assertRaises(CannotControl):
-            await api.set_group_position(1, 0, 100)
+                await api.set_group_position(1, 0, 100)
 
-    async def test_known_status_field_confirms_remote_command(self) -> None:
-        session = FakeSession(
-            [FakeResponse(status=200, text="{}", json_data={"status": "success"})]
-        )
-        api = NormanGen1Api(session, "192.0.2.10", "123456789")
-        api._session_cookie = "Session=1"
-
-        await api.set_group_position(1, 0, 100)
-
-    async def test_live_remote_ok_field_confirms_remote_command(self) -> None:
+    async def test_live_remote_ok_response_is_accepted(self) -> None:
         session = FakeSession(
             [FakeResponse(status=200, text="{}", json_data={"remote": "ok"})]
         )
@@ -967,18 +957,17 @@ class TestProtocolEdgeCoverage(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(CannotControl):
                     await api.set_group_position(1, 0, 100)
 
-    async def test_all_supported_remote_success_shapes(self) -> None:
-        for payload in ({"success": True}, {"result": 1}, {"status": "OK"}):
-            with self.subTest(payload=payload):
-                api = NormanGen1Api(
-                    FakeSession(
-                        [FakeResponse(status=200, text="{}", json_data=payload)]
-                    ),
-                    "192.0.2.10",
-                    "123456789",
-                )
-                api._session_cookie = "Session=1"
-                await api.set_group_position(1, 0, 100)
+    async def test_zero_remote_error_code_is_accepted(self) -> None:
+        api = NormanGen1Api(
+            FakeSession(
+                [FakeResponse(status=200, text="{}", json_data={"errorCode": 0})]
+            ),
+            "192.0.2.10",
+            "123456789",
+        )
+        api._session_cookie = "Session=1"
+
+        await api.set_group_position(1, 0, 100)
 
     async def test_full_open_room_uses_semantic_broadcast(self) -> None:
         api = RecordingApi()

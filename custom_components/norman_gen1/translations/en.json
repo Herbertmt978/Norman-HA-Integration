@@ -132,8 +132,8 @@
     "cannot_connect": {
       "message": "The Norman Gen 1 hub could not be reached."
     },
-    "command_not_confirmed": {
-      "message": "The Norman Gen 1 hub did not confirm the shutter command."
+    "command_failed": {
+      "message": "The Norman Gen 1 hub could not complete the shutter command."
     },
     "hub_needs_restart": {
       "message": "The hub's local control service is not responding. Restart the Norman hub, wait for its status light to settle, then try again."

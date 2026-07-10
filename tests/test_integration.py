@@ -157,7 +157,7 @@ class FailingControlApi(RecordingControlApi):
     async def set_group_position(
         self, room_id: int, level: int, position: int, model: int = 1
     ) -> None:
-        raise api_module.CannotControl("not acknowledged")
+        raise api_module.CannotControl("explicitly rejected")
 
 
 class FakeUnloadApi:
@@ -611,7 +611,7 @@ class TestEntityLifecycle(unittest.IsolatedAsyncioTestCase):
             await entity.async_open_cover()
 
         self.assertEqual(caught.exception.translation_domain, DOMAIN)
-        self.assertEqual(caught.exception.translation_key, "command_not_confirmed")
+        self.assertEqual(caught.exception.translation_key, "command_failed")
 
 
 class TestUnload(unittest.IsolatedAsyncioTestCase):
