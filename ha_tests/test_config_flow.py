@@ -15,7 +15,12 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.norman_gen1.api import CannotConnect, InvalidAuth, InvalidSession
+from custom_components.norman_gen1.api import (
+    CannotConnect,
+    HubNeedsRestart,
+    InvalidAuth,
+    InvalidSession,
+)
 from custom_components.norman_gen1.const import (
     CONF_APP_VERSION,
     DEFAULT_APP_VERSION,
@@ -252,6 +257,7 @@ async def test_reauth_recovers_on_same_flow_after_validation_error(
     ("error", "error_key"),
     [
         (InvalidAuth("bad password"), "invalid_auth"),
+        (HubNeedsRestart("restart required"), "hub_needs_restart"),
         (CannotConnect("offline"), "cannot_connect"),
         (RuntimeError("unexpected"), "unknown"),
     ],

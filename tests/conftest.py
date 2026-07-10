@@ -234,6 +234,21 @@ class DeviceInfo(dict):
 device_registry.DeviceInfo = DeviceInfo
 
 
+class DeviceRegistry:
+    """Minimal device registry accepting device creation calls."""
+
+    def async_get_or_create(self, **kwargs: Any) -> None:
+        return None
+
+
+def async_get_device_registry(hass: Any) -> DeviceRegistry:
+    """Return a minimal device registry."""
+    return DeviceRegistry()
+
+
+device_registry.async_get = async_get_device_registry
+
+
 cover.ATTR_POSITION = "position"
 
 

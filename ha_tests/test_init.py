@@ -6,7 +6,11 @@ import aiohttp
 from homeassistant.components.cover import DOMAIN as COVER_DOMAIN
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    entity_registry as er,
+)
 from homeassistant.util import dt as dt_util
 import pytest
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
@@ -57,11 +61,29 @@ async def test_setup_registers_entities_device_and_unloads(
     assert hass.states.get(entities["hub-1_room_1"].entity_id).state == "closed"
     assert hass.states.get(entities["hub-1_room_1_level_1"].entity_id).state == "closed"
 
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, "hub-1")})
-    assert device is not None
-    assert device.manufacturer == "Norman"
-    assert device.model == "Gen 1 Hub"
-    assert device.sw_version == "1.0"
+    device_registry = dr.async_get(hass)
+    hub_device = device_registry.async_get_device(identifiers={(DOMAIN, "hub-1")})
+    assert hub_device is not None
+    assert hub_device.manufacturer == "Norman"
+    assert hub_device.model == "Gen 1 Hub"
+    assert hub_device.sw_version == "1.0"
+
+    room_device = device_registry.async_get_device(
+        identifiers={(DOMAIN, "hub-1_room_1")}
+    )
+    assert room_device is not None
+    assert room_device.name == "Living room"
+    assert room_device.via_device_id == hub_device.id
+    living_room_area = ar.async_get(hass).async_get_area_by_name("Living room")
+    assert living_room_area is not None
+    assert room_device.area_id == living_room_area.id
+
+    room_entity = entities["hub-1_room_1"]
+    group_entity = entities["hub-1_room_1_level_1"]
+    assert room_entity.device_id == room_device.id
+    assert group_entity.device_id == room_device.id
+    assert room_entity.original_name is None
+    assert group_entity.original_name == "Left panel"
 
     runtime_client = entry.runtime_data.api
     runtime_session = runtime_client.session
@@ -112,6 +134,23 @@ async def test_dynamic_room_and_group_are_added_after_natural_refresh(
         "hub-1_room_2_level_1",
     }
     assert hass.states.get(entities["hub-1_room_2"].entity_id).state == "open"
+
+    device_registry = dr.async_get(hass)
+    hub_device = device_registry.async_get_device(identifiers={(DOMAIN, "hub-1")})
+    assert hub_device is not None
+    dining_room_device = device_registry.async_get_device(
+        identifiers={(DOMAIN, "hub-1_room_2")}
+    )
+    assert dining_room_device is not None
+    assert dining_room_device.name == "Dining room"
+    assert dining_room_device.via_device_id == hub_device.id
+    dining_room_area = ar.async_get(hass).async_get_area_by_name("Dining room")
+    assert dining_room_area is not None
+    assert dining_room_device.area_id == dining_room_area.id
+    assert entities["hub-1_room_2"].device_id == dining_room_device.id
+    assert entities["hub-1_room_2_level_1"].device_id == dining_room_device.id
+    assert entities["hub-1_room_2"].original_name is None
+    assert entities["hub-1_room_2_level_1"].original_name == "Panel"
 
 
 async def test_runtime_hub_identity_change_makes_entities_unavailable_and_recovers(
@@ -312,3 +351,69 @@ async def test_setup_upgrades_legacy_host_unique_id(
     assert migrated_device is not None
     assert migrated_device.id == legacy_device.id
     assert device_registry.async_get_device({(DOMAIN, old_hub_id)}) is None
+
+    room_device = device_registry.async_get_device(
+        identifiers={(DOMAIN, "hub-1_room_1")}
+    )
+    assert room_device is not None
+    assert room_device.via_device_id == migrated_device.id
+    assert entities["hub-1_room_1"].device_id == room_device.id
+    assert entities["hub-1_room_1_level_1"].device_id == room_device.id
+
+
+async def test_setup_migrates_v021_entity_customizations_to_room_device(
+    hass: HomeAssistant,
+    mock_config_entry,
+    mock_norman_api,
+) -> None:
+    """Move v0.2.1 entries without replacing or re-enabling them."""
+    device_registry = dr.async_get(hass)
+    hub_device = device_registry.async_get_or_create(
+        config_entry_id=mock_config_entry.entry_id,
+        identifiers={(DOMAIN, "hub-1")},
+        name="Norman Hub Home",
+    )
+    entity_registry = er.async_get(hass)
+    old_room = entity_registry.async_get_or_create(
+        COVER_DOMAIN,
+        DOMAIN,
+        "hub-1_room_1",
+        config_entry=mock_config_entry,
+        device_id=hub_device.id,
+        suggested_object_id="custom_living_room",
+    )
+    old_group = entity_registry.async_get_or_create(
+        COVER_DOMAIN,
+        DOMAIN,
+        "hub-1_room_1_level_1",
+        config_entry=mock_config_entry,
+        device_id=hub_device.id,
+        suggested_object_id="custom_left_panel",
+    )
+    old_room = entity_registry.async_update_entity(
+        old_room.entity_id,
+        name="My living room shutters",
+    )
+    old_group = entity_registry.async_update_entity(
+        old_group.entity_id,
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+
+    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    entities = _integration_entities(hass, mock_config_entry.entry_id)
+    room = entities["hub-1_room_1"]
+    group = entities["hub-1_room_1_level_1"]
+    room_device = device_registry.async_get_device(
+        identifiers={(DOMAIN, "hub-1_room_1")}
+    )
+    assert room_device is not None
+    assert room.id == old_room.id
+    assert group.id == old_group.id
+    assert room.entity_id == old_room.entity_id
+    assert group.entity_id == old_group.entity_id
+    assert room.name == "My living room shutters"
+    assert group.disabled_by is er.RegistryEntryDisabler.USER
+    assert room.device_id == room_device.id
+    assert group.device_id == room_device.id

@@ -10,6 +10,7 @@
     },
     "error": {
       "cannot_connect": "Could not connect to the Norman Gen 1 hub. Check the IP address and network access.",
+      "hub_needs_restart": "The hub's local control service is not responding. Restart the Norman hub, wait for its status light to settle, then try again.",
       "invalid_auth": "The hub rejected the password.",
       "invalid_host": "Enter only an IP address, hostname, or root HTTP URL without credentials, a path, query, or fragment.",
       "no_devices": "The hub responded, but no rooms or shutter devices were discovered.",
@@ -75,6 +76,9 @@
     },
     "command_not_confirmed": {
       "message": "The Norman Gen 1 hub did not confirm the shutter command."
+    },
+    "hub_needs_restart": {
+      "message": "The hub's local control service is not responding. Restart the Norman hub, wait for its status light to settle, then try again."
     },
     "invalid_auth": {
       "message": "The Norman Gen 1 hub rejected the configured password."

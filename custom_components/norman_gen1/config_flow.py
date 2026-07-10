@@ -18,6 +18,7 @@ import voluptuous as vol
 
 from .api import (
     CannotConnect,
+    HubNeedsRestart,
     InvalidAuth,
     InvalidSession,
     NoDevicesFound,
@@ -379,6 +380,8 @@ async def _validate_for_flow(
     """Validate flow data and return a Home Assistant error key when needed."""
     try:
         return await _validate_input(hass, data, transaction_lock), None
+    except HubNeedsRestart:
+        return None, "hub_needs_restart"
     except CannotConnect:
         return None, "cannot_connect"
     except InvalidAuth:

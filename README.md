@@ -6,8 +6,9 @@ The Gen 1 protocol was inferred from local network traffic and verified against 
 
 ## What it provides
 
-- One `cover` entity for every room.
-- One `cover` entity for every discovered room group or plantation-shutter panel.
+- One child device for every room, linked to the physical hub device.
+- One room-wide `cover` as each room device's main control.
+- One `cover` for every discovered room group or plantation-shutter panel.
 - Open, close, and target-position control.
 - Safe position mapping for conventional and tilt-style shutters.
 - Dynamic addition of rooms and panels discovered after setup.
@@ -40,7 +41,7 @@ The integration uses these local endpoints:
 - `RemoteControl`
 - `AdminLogout` and `GatewayLogout`
 
-Every operation is serialized as one login → request(s) → logout transaction. This matters because the hub behaves as a single-session device and concurrent sessions can invalidate one another.
+Every integration operation is serialized as one login → request(s) → logout transaction. The hub issues a session cookie at login and refreshes it on later requests. Live testing confirms that the official app and Home Assistant can hold independent sessions, while serialization prevents Home Assistant's own polls, validation, and commands from overlapping.
 
 ## Installation with HACS
 
@@ -66,6 +67,8 @@ Enter:
 
 Setup logs in and verifies that the endpoint returns usable room or shutter data. The returned hub ID becomes the config-entry, device, and entity identity. A later response from a different hub is rejected before data is read or a command is sent.
 
+The integration page contains the physical hub plus one child device per Norman room. Each room device has a room-wide main cover and its addressable panel/group covers. Existing entity unique IDs are retained during this upgrade, so entity-based automations and user renames remain intact. Review device-based automation targets because the covers move from the hub device to their room device.
+
 ### Finding the hub
 
 Check the client list in your router or network controller for a Norman device or a hostname beginning with `NORMANHUB`. You can also inspect the local ARP table:
@@ -81,6 +84,12 @@ nmap -sn 192.168.1.0/24
 ```
 
 Opening `http://<hub-address>/` in a browser can help confirm the address.
+
+## Radio and USB repeaters
+
+Home Assistant communicates with the hub over the local LAN. The hub and Norman USB repeaters then use Norman's **proprietary 2.4 GHz RF** network to reach the shutters. The repeaters join that network automatically and retransmit control traffic. The [Gen 1 hub manual](https://fcc.report/FCC-ID/ppqhub01/4063119.pdf) recommends a repeater in each room and another near the stairs when the signal must cross floors.
+
+This radio is not Bluetooth. ESPHome Bluetooth proxies cannot observe or repeat its packets, and the integration deliberately leaves the proven hub/repeater RF path in place. Direct radio support would require a separate hardware and protocol reverse-engineering project.
 
 ## Position behavior
 
@@ -122,6 +131,7 @@ Typical use cases include scheduled privacy positions, closing rooms when everyo
 - The hub is polled every 60 seconds.
 - Room metadata and shutter state are fetched in one serialized authenticated transaction.
 - A rejected session is retried once with a fresh login.
+- A failed Cherokee CGI response is fully consumed before recovery starts, so recovery requests cannot overlap a still-running failed request.
 - Authentication failures start Home Assistant's reauthentication flow.
 - Communication, malformed-data, empty-snapshot, and hub-identity failures make entities unavailable without deleting their last known registry entries.
 - New rooms and groups are added dynamically after a successful poll.
@@ -144,11 +154,13 @@ Remove the config entry from **Settings → Devices & services**. Home Assistant
 ## Troubleshooting
 
 - **Cannot connect:** confirm the address is reachable from the Home Assistant host and that TCP port 80 is not blocked.
+- **Hub needs a restart / repeated HTTP 500:** the embedded Cherokee CGI service can become globally unresponsive even though the hub still answers on port 80. Restart or power-cycle the hub, wait for its status light to settle, then reload the integration. The integration drains the failed response and makes one safe recovery attempt before showing this action.
 - **Invalid authentication:** try the factory password `123456789` unless the hub password was changed.
 - **No devices:** confirm rooms and shutters are visible to the official Norman app and paired with the hub.
 - **Command not confirmed:** check hub RF range, motor battery, and pairing. A handheld remote can work even when the hub's pairing or range is wrong.
 - **Wrong direction:** use the per-room or per-panel movement-profile options.
-- **Official app stops working while Home Assistant polls:** update to the latest integration version; all transactions now log out and are serialized.
+- **Official app and Home Assistant:** both can use independent hub sessions. Update to the latest integration version so every Home Assistant transaction is serialized and logged out cleanly.
+- **Weak shutter radio signal:** keep the Norman USB repeaters powered and positioned within the proprietary RF network. ESPHome Bluetooth proxies do not extend this link.
 - **HACS icon is unavailable:** Home Assistant 2026.3 or newer can serve the bundled custom-integration brand images locally. Restart Home Assistant after installing or updating the integration, then refresh the browser. HACS versions that still use the public Brands service may continue to show a placeholder; this does not affect the integration itself.
 
 ## Known limitations
@@ -156,6 +168,8 @@ Remove the config entry from **Settings → Devices & services**. Home Assistant
 - Hardware testing is currently limited to one Gen 1 hub; payloads from other firmware and regional variants are welcome.
 - The hub can acknowledge a command even if a motor does not physically move.
 - Room-level positions are implemented by sending the target to every discovered group level.
+- A panel entity represents one commandable room level. Firmware may report multiple window records for the same level; those records remain one aggregate control.
+- Direct proprietary RF or Bluetooth control is not provided; commands intentionally pass through the Norman hub and repeaters.
 - Entity display names are learned when entities are first created. Rename entities in Home Assistant if hub-side names later change.
 - Gen 2 compatibility is not claimed.
 
@@ -176,9 +190,17 @@ An eventual Home Assistant Core submission will also require extracting the prot
 
 ## Changelog
 
+### 0.2.2
+
+- Verified login, discovery, concurrent sessions, control acknowledgement, and logout against the physical Gen 1 hub.
+- Fully drains failed CGI responses before recovery and gives an actionable hub-restart message when the embedded login service remains unavailable.
+- Accepts the hub's real `{"remote":"ok"}` control acknowledgement instead of reporting a successful command as unconfirmed.
+- Organizes covers into hub-linked room devices: a room-wide main cover plus honest panel/group subcontrols, while preserving existing entity unique IDs.
+- Documents the proprietary 2.4 GHz Norman repeater network and why ESPHome Bluetooth proxies cannot replace it.
+
 ### 0.2.1
 
-- Fixed the post-upgrade `GatewayLogin` HTTP 500 regression by carrying hub-issued session cookies through the forced logout and single login retry.
+- Carried hub-issued session cookies through the forced logout and single login retry.
 - Added real HTTP regression coverage for cookies returned with the 500 response, logout transition cookies, and identical cookie values reissued during logout.
 - Added a validation guard for the bundled local icon and logo and documented Home Assistant and HACS branding compatibility.
 

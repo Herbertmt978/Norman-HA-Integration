@@ -14,12 +14,12 @@ from homeassistant.components.cover import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import (
     CannotConnect,
     CannotControl,
+    HubNeedsRestart,
     InvalidAuth,
     InvalidSession,
     NormanGen1Api,
@@ -39,9 +39,9 @@ from .const import (
     CONF_REVERSED_CLOSE_TARGETS,
     CONF_TILT_OPEN_TARGETS,
     DOMAIN,
-    MANUFACTURER,
 )
 from .coordinator import NormanDataUpdateCoordinator
+from .device import room_device_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,20 +73,7 @@ class NormanBaseCover(CoordinatorEntity[NormanDataUpdateCoordinator], CoverEntit
         self._optimistic_position: int | None = None
         self._refresh_generation = 0
         self._refresh_task: asyncio.Task[None] | None = None
-        hub_name = self.api.hub_info.get("hubName")
-        if not isinstance(hub_name, str) or not hub_name.strip():
-            hub_name = "Norman Gen 1 Hub"
-        sw_version = self.api.hub_info.get("swVer")
-        if not isinstance(sw_version, str):
-            sw_version = None
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self.api.hub_id)},
-            name=f"Norman Hub {hub_name}",
-            manufacturer=MANUFACTURER,
-            model="Gen 1 Hub",
-            sw_version=sw_version,
-            configuration_url=f"http://{self.api.host}/",
-        )
+        self._attr_device_info = room_device_info(api, room)
 
     @property
     def available(self) -> bool:
@@ -171,6 +158,13 @@ class NormanBaseCover(CoordinatorEntity[NormanDataUpdateCoordinator], CoverEntit
                 except InvalidSession:
                     if attempt == 1:
                         raise
+        except HubNeedsRestart as err:
+            message = "The Norman Gen 1 hub's local control service needs a restart"
+            _LOGGER.warning("%s while controlling %s", message, self.entity_id)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="hub_needs_restart",
+            ) from err
         except CannotConnect as err:
             message = f"Unable to reach Norman Gen 1 hub at {self.api.host}"
             _LOGGER.warning("%s while controlling %s: %s", message, self.entity_id, err)

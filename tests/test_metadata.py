@@ -36,7 +36,7 @@ def test_release_metadata_matches_supported_runtime() -> None:
     manifest = _json(INTEGRATION / "manifest.json")
     hacs = _json(ROOT / "hacs.json")
 
-    assert manifest["version"] == "0.2.1"
+    assert manifest["version"] == "0.2.2"
     assert manifest["domain"] == "norman_gen1"
     assert manifest["config_flow"] is True
     assert manifest["iot_class"] == "local_polling"

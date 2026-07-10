@@ -20,6 +20,7 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import NormanConfigEntry, NormanDataUpdateCoordinator
+from .device import hub_device_info
 from .session import async_create_norman_session
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,6 +52,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: NormanConfigEntry) -> bo
         hass.config_entries.async_update_entry(entry, unique_id=api.hub_id)
     api.pin_hub_id(api.hub_id)
     _migrate_legacy_options(hass, entry, coordinator)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        **hub_device_info(api),
+    )
 
     _LOGGER.info(
         "Discovered Norman Gen 1 hub with %s room(s), %s shutter device(s), and %s group(s)",

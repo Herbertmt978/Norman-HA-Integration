@@ -17,6 +17,7 @@ import pytest
 from custom_components.norman_gen1.api import (
     CannotConnect,
     CannotControl,
+    HubNeedsRestart,
     InvalidAuth,
     InvalidSession,
     NormanRoom,
@@ -158,6 +159,7 @@ async def test_identity_change_blocks_control_before_command(
 @pytest.mark.parametrize(
     ("error", "translation_key"),
     [
+        (HubNeedsRestart("restart required"), "hub_needs_restart"),
         (CannotConnect("offline"), "cannot_connect"),
         (InvalidAuth("bad password"), "invalid_auth"),
     ],

@@ -22,7 +22,7 @@ DEFAULT_CLOSE_POSITION = 0
 REVERSED_CLOSE_POSITION = 100
 TILT_ROOM_STYLES = {2, 3, 13}
 REVERSED_CLOSE_ROOM_STYLES = {13}
-REMOTE_SUCCESS_KEYS = ("result", "status", "success")
+REMOTE_SUCCESS_KEYS = ("remote", "result", "status", "success")
 HUB_TEXT_FIELDS = ("hubName", "swVer", "firmwareVersion", "version", "status")
 
 
@@ -67,6 +67,19 @@ class NormanGen1Error(Exception):
 
 class CannotConnect(NormanGen1Error):
     """Raised when the hub cannot be reached."""
+
+
+class _HttpStatusError(CannotConnect):
+    """Record a non-success HTTP response without exposing response content."""
+
+    def __init__(self, endpoint: str, status: int) -> None:
+        super().__init__(f"{endpoint} returned HTTP {status}")
+        self.endpoint = endpoint
+        self.status = status
+
+
+class HubNeedsRestart(CannotConnect):
+    """Raised when the hub's local login service remains unavailable."""
 
 
 class InvalidAuth(NormanGen1Error):
@@ -202,12 +215,20 @@ class NormanGen1Api:
                 self.host,
             )
             transition_cookie = await self.logout(force=True)
-            data = await self._post(
-                "GatewayLogin",
-                payload,
-                require_session=False,
-                request_cookie=transition_cookie,
-            )
+            try:
+                data = await self._post(
+                    "GatewayLogin",
+                    payload,
+                    require_session=False,
+                    request_cookie=transition_cookie,
+                )
+            except CannotConnect as retry_err:
+                if _is_gateway_login_server_error(retry_err):
+                    raise HubNeedsRestart(
+                        "The Norman hub did not recover its login service; "
+                        "restart the hub and try again"
+                    ) from retry_err
+                raise
         if "errorCode" in data:
             error_code = _as_int(data.get("errorCode"))
             if error_code is None or error_code != 0:
@@ -405,6 +426,10 @@ class NormanGen1Api:
                 if session_cookie := _session_cookie_from_headers(response.headers):
                     self._session_cookie = session_cookie
                     self._session_cookie_generation += 1
+                # Cherokee can still be running the failed CGI request after it
+                # sends the response headers. Consume the complete response before
+                # starting login recovery so requests never overlap at the hub.
+                await response.read()
                 if response.status in (401, 403):
                     if require_session:
                         raise InvalidSession(
@@ -412,7 +437,7 @@ class NormanGen1Api:
                         )
                     raise InvalidAuth("Hub rejected the password")
                 if response.status != 200:
-                    raise CannotConnect(f"{endpoint} returned HTTP {response.status}")
+                    raise _HttpStatusError(endpoint, response.status)
                 try:
                     data = await response.json(content_type=None)
                 except Exception as err:
@@ -581,7 +606,11 @@ def _is_success_value(value: Any) -> bool:
 
 
 def _is_gateway_login_server_error(err: CannotConnect) -> bool:
-    return str(err).startswith("GatewayLogin returned HTTP 500")
+    return (
+        isinstance(err, _HttpStatusError)
+        and err.endpoint == "GatewayLogin"
+        and err.status == 500
+    )
 
 
 def room_open_position(

@@ -9,6 +9,7 @@ import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+import custom_components.norman_gen1.api as api_module
 from custom_components.norman_gen1.api import (
     CannotConnect,
     CannotControl,
@@ -59,6 +60,9 @@ class FakeResponse:
 
     async def text(self) -> str:
         return self._text
+
+    async def read(self) -> bytes:
+        return self._text.encode()
 
     async def json(self, content_type: Any = None) -> Any:
         if self._json_data is None:
@@ -189,6 +193,70 @@ class TestRoomPositionControl(unittest.TestCase):
 
 
 class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
+    async def test_login_drains_streaming_500_before_starting_recovery(
+        self,
+    ) -> None:
+        first_login = True
+        body_handler_done = asyncio.Event()
+        body_finished = False
+        logout_started_after_body: list[bool] = []
+
+        async def gateway_login(request: web.Request) -> web.StreamResponse:
+            nonlocal body_finished, first_login
+            if not first_login:
+                return web.json_response(
+                    {"hubId": "test-hub-1", "hubName": "home"},
+                    headers={"Set-Cookie": "Session=fresh; Path=/"},
+                )
+
+            first_login = False
+            response = web.StreamResponse(
+                status=500,
+                headers={"Content-Type": "text/html"},
+            )
+            await response.prepare(request)
+            await response.write(b"<html><body>")
+            try:
+                await asyncio.sleep(0.1)
+                await response.write(b"Internal Server Error</body></html>")
+                await response.write_eof()
+                body_finished = True
+            except (ConnectionError, RuntimeError):
+                # The red test's current implementation releases the connection
+                # without consuming the remaining body. Keep the server fixture
+                # alive long enough to record the protocol ordering either way.
+                pass
+            finally:
+                body_handler_done.set()
+            return response
+
+        async def logout(request: web.Request) -> web.Response:
+            logout_started_after_body.append(body_finished)
+            return web.json_response({"status": "Success"})
+
+        app = web.Application()
+        app.router.add_post("/cgi-bin/cgi/GatewayLogin", gateway_login)
+        app.router.add_post("/cgi-bin/cgi/{endpoint:AdminLogout|GatewayLogout}", logout)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            async with aiohttp.ClientSession(
+                cookie_jar=aiohttp.DummyCookieJar()
+            ) as session:
+                api = NormanGen1Api(
+                    session,
+                    f"{server.host}:{server.port}",
+                    "123456789",
+                )
+
+                info = await api.login()
+                await asyncio.wait_for(body_handler_done.wait(), timeout=1)
+        finally:
+            await server.close()
+
+        self.assertEqual(info["hubName"], "home")
+        self.assertEqual(logout_started_after_body, [True, True])
+
     async def test_login_uses_error_response_cookie_to_clear_stale_session(
         self,
     ) -> None:
@@ -204,7 +272,7 @@ class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
                     headers={"Set-Cookie": "Session=stale; Path=/"},
                 )
             return web.json_response(
-                {"hubId": "MBAHUB_FAE224", "hubName": "home"},
+                {"hubId": "test-hub-1", "hubName": "home"},
                 headers={"Set-Cookie": "Session=fresh; Path=/"},
             )
 
@@ -263,7 +331,7 @@ class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
                     headers={"Set-Cookie": "Session=0; Path=/"},
                 )
             return web.json_response(
-                {"hubId": "MBAHUB_FAE224", "hubName": "home"},
+                {"hubId": "test-hub-1", "hubName": "home"},
                 headers={"Set-Cookie": "Session=fresh; Path=/"},
             )
 
@@ -329,8 +397,8 @@ class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
                 ),
                 FakeResponse(
                     status=200,
-                    text='{ "hubId": "MBAHUB_FAE224", "hubName": "home" }',
-                    json_data={"hubId": "MBAHUB_FAE224", "hubName": "home"},
+                    text='{ "hubId": "test-hub-1", "hubName": "home" }',
+                    json_data={"hubId": "test-hub-1", "hubName": "home"},
                     headers={"Set-Cookie": "Session=24680"},
                 ),
             ]
@@ -367,8 +435,8 @@ class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
                 ),
                 FakeResponse(
                     status=200,
-                    text='{ "hubId": "MBAHUB_FAE224", "hubName": "home" }',
-                    json_data={"hubId": "MBAHUB_FAE224", "hubName": "home"},
+                    text='{ "hubId": "test-hub-1", "hubName": "home" }',
+                    json_data={"hubId": "test-hub-1", "hubName": "home"},
                     headers={"Set-Cookie": "Session=24680"},
                 ),
             ]
@@ -378,6 +446,29 @@ class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
         info = await api.login()
 
         self.assertEqual(info["hubName"], "home")
+        self.assertEqual(
+            [request["url"].rsplit("/", 1)[-1] for request in session.requests],
+            ["GatewayLogin", "AdminLogout", "GatewayLogout", "GatewayLogin"],
+        )
+
+    async def test_persistent_generic_login_500_requests_hub_restart(self) -> None:
+        session = FakeSession(
+            [
+                FakeResponse(status=500, text="Internal Server Error"),
+                FakeResponse(status=500, text="Internal Server Error"),
+                FakeResponse(status=500, text="Internal Server Error"),
+                FakeResponse(status=500, text="Internal Server Error"),
+            ]
+        )
+        api = NormanGen1Api(session, "192.0.2.10", "123456789")
+
+        with self.assertRaises(api_module.HubNeedsRestart) as caught:
+            await api.login()
+
+        self.assertEqual(
+            str(caught.exception),
+            "The Norman hub did not recover its login service; restart the hub and try again",
+        )
         self.assertEqual(
             [request["url"].rsplit("/", 1)[-1] for request in session.requests],
             ["GatewayLogin", "AdminLogout", "GatewayLogout", "GatewayLogin"],
@@ -510,6 +601,15 @@ class TestApiPayloadValidation(unittest.IsolatedAsyncioTestCase):
     async def test_known_status_field_confirms_remote_command(self) -> None:
         session = FakeSession(
             [FakeResponse(status=200, text="{}", json_data={"status": "success"})]
+        )
+        api = NormanGen1Api(session, "192.0.2.10", "123456789")
+        api._session_cookie = "Session=1"
+
+        await api.set_group_position(1, 0, 100)
+
+    async def test_live_remote_ok_field_confirms_remote_command(self) -> None:
+        session = FakeSession(
+            [FakeResponse(status=200, text="{}", json_data={"remote": "ok"})]
         )
         api = NormanGen1Api(session, "192.0.2.10", "123456789")
         api._session_cookie = "Session=1"

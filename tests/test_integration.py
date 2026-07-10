@@ -617,6 +617,7 @@ class TestSetup(unittest.IsolatedAsyncioTestCase):
                 **kwargs,
             ) -> None:
                 captured["app_version"] = app_version
+                self.host = host
                 self.hub_info = {"hubId": "hub-1", "hubName": "Home"}
 
             @property

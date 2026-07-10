@@ -76,7 +76,7 @@ class NormanRoomCover(NormanBaseCover):
         """Initialize a room cover."""
         super().__init__(entry, api, coordinator, room)
         self._attr_unique_id = f"{api.hub_id}_room_{room.id}"
-        self._attr_name = clean_label(room.name)
+        self._attr_name = None
 
     @property
     def supported_features(self) -> CoverEntityFeature:
@@ -186,7 +186,7 @@ class NormanGroupCover(NormanBaseCover):
         self.level = level
         self.group_name = clean_label(display_name)
         self._attr_unique_id = f"{api.hub_id}_room_{room.id}_level_{level}"
-        self._attr_name = f"{clean_label(room.name)} {self.group_name}"
+        self._attr_name = self.group_name
 
     @property
     def _option_level(self) -> int:
