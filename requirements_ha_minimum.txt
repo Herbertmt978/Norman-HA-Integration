@@ -3,4 +3,4 @@ pytest-homeassistant-custom-component==0.13.181
 # Preserve the dependency bounds expected by this historical Home Assistant release.
 josepy<2
 # Newer pycares leaves a shutdown helper thread in the 2024.11 test harness.
-pycares==4.4.0
+pycares==4.9.0
