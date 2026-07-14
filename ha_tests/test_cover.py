@@ -29,6 +29,7 @@ from custom_components.norman_gen1.const import (
     CONF_DEFAULT_OPEN_POSITION,
     CONF_OPEN_POSITION,
     CONF_POSITION_PROFILES,
+    CONF_SIMULTANEOUS_ROOMS,
 )
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
@@ -82,12 +83,12 @@ async def test_group_commands_use_home_assistant_position_semantics(
     api.set_group_position.assert_awaited_once_with(1, 1, 0, 1)
 
 
-async def test_room_endpoints_use_one_simultaneous_semantic_broadcast(
+async def test_room_endpoints_use_level_fanout_by_default(
     hass: HomeAssistant,
     setup_integration,
     mock_norman_api,
 ) -> None:
-    """Use the hub's one room command when configured and native targets match."""
+    """Prefer the reliable level path even when native endpoints match."""
     entry = setup_integration
     entity_id = _entity_id(hass, entry.entry_id, "hub-1_room_1")
     api = entry.runtime_data.api
@@ -99,10 +100,11 @@ async def test_room_endpoints_use_one_simultaneous_semantic_broadcast(
         {ATTR_ENTITY_ID: entity_id},
         blocking=True,
     )
-    api.full_open_room.assert_awaited_once_with(1)
-    api.set_room_positions.assert_not_awaited()
+    api.set_room_positions.assert_awaited_once_with(1, {1: 100}, {1: 1})
+    api.full_open_room.assert_not_awaited()
     assert api.authenticated_session.call_count == sessions_before + 1
 
+    api.set_room_positions.reset_mock()
     await hass.services.async_call(
         COVER_DOMAIN,
         SERVICE_SET_COVER_POSITION,
@@ -111,22 +113,28 @@ async def test_room_endpoints_use_one_simultaneous_semantic_broadcast(
     )
     api.set_room_positions.assert_awaited_once_with(1, {1: 25}, {1: 1})
 
+    api.set_room_positions.reset_mock()
     await hass.services.async_call(
         COVER_DOMAIN,
         SERVICE_CLOSE_COVER,
         {ATTR_ENTITY_ID: entity_id},
         blocking=True,
     )
-    api.full_close_room.assert_awaited_once_with(1)
+    api.set_room_positions.assert_awaited_once_with(1, {1: 0}, {1: 1})
+    api.full_close_room.assert_not_awaited()
 
 
-async def test_style_13_defaults_broadcast_37_open_and_100_closed(
+async def test_selected_style_13_room_broadcasts_37_open_and_100_closed(
     hass: HomeAssistant,
     mock_config_entry,
     mock_norman_api,
 ) -> None:
-    """Match the live-tested 37/100 profile with simultaneous hub commands."""
-    hass.config_entries.async_update_entry(mock_config_entry, version=2)
+    """Use simultaneous commands only for an explicitly selected native room."""
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        version=2,
+        options={CONF_SIMULTANEOUS_ROOMS: ["room:1"]},
+    )
     mock_norman_api.rooms[0].raw = {"Style": 13}
     mock_norman_api.windows[0].position = 37
     assert await hass.config_entries.async_setup(mock_config_entry.entry_id)

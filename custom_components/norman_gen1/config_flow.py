@@ -39,6 +39,7 @@ from .const import (
     CONF_OPEN_POSITION,
     CONF_POSITION_PROFILES,
     CONF_REVERSED_CLOSE_TARGETS,
+    CONF_SIMULTANEOUS_ROOMS,
     CONF_TARGET,
     CONF_TILT_OPEN_TARGETS,
     DEFAULT_APP_VERSION,
@@ -336,7 +337,48 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         menu_options = ["defaults"]
         if _target_choices(entry):
             menu_options.append("target")
+        if _room_choices(entry):
+            menu_options.append("room_commands")
         return self.async_show_menu(step_id="init", menu_options=menu_options)
+
+    async def async_step_room_commands(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose rooms allowed to use a simultaneous room command."""
+        choices = _room_choices(self._entry)
+        if not choices:
+            return self.async_abort(reason="no_rooms")
+
+        stored = _stored_simultaneous_rooms(self._entry.options)
+        current = [target for target in choices if target in stored]
+        if user_input is not None:
+            selected = set(user_input[CONF_SIMULTANEOUS_ROOMS])
+            updated = dict(self._entry.options)
+            retained = [target for target in stored if target not in choices]
+            updated[CONF_SIMULTANEOUS_ROOMS] = retained + [
+                target for target in choices if target in selected
+            ]
+            return self.async_create_entry(data=updated)
+
+        return self.async_show_form(
+            step_id="room_commands",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SIMULTANEOUS_ROOMS, default=current
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(value=value, label=label)
+                                for value, label in choices.items()
+                            ],
+                            multiple=True,
+                            mode=selector.SelectSelectorMode.LIST,
+                        )
+                    )
+                }
+            ),
+        )
 
     async def async_step_defaults(
         self, user_input: dict[str, Any] | None = None
@@ -491,9 +533,8 @@ def _target_choices(entry: config_entries.ConfigEntry) -> dict[str, str]:
     coordinator = getattr(entry, "runtime_data", None)
     choices: dict[str, str] = {}
     if coordinator is not None and coordinator.data is not None:
-        rooms: list[NormanRoom] = coordinator.data.rooms
         levels_by_room: dict[int, list[int]] = coordinator.data.levels_by_room
-        for room in sorted(rooms, key=lambda item: clean_label(item.name)):
+        for room in _discovered_rooms(entry):
             room_label = clean_label(room.name)
             choices[room_target_id(room.id)] = room_label
             levels = levels_by_room.get(room.id, [])
@@ -506,6 +547,44 @@ def _target_choices(entry: config_entries.ConfigEntry) -> dict[str, str]:
     for target in stored_position_profiles(entry.options):
         choices.setdefault(target, target)
     return choices
+
+
+def _room_choices(entry: config_entries.ConfigEntry) -> dict[str, str]:
+    """Return stable option IDs and labels for currently discovered rooms."""
+    return {
+        room_target_id(room.id): clean_label(room.name)
+        for room in _discovered_rooms(entry)
+    }
+
+
+def _stored_simultaneous_rooms(options: Mapping[str, Any]) -> list[str]:
+    """Return valid saved room targets while preserving their stored order."""
+    raw_targets = options.get(CONF_SIMULTANEOUS_ROOMS)
+    if not isinstance(raw_targets, list):
+        return []
+    targets: list[str] = []
+    for target in raw_targets:
+        if not isinstance(target, str) or target in targets:
+            continue
+        prefix, separator, raw_room_id = target.partition(":")
+        if prefix != "room" or separator != ":":
+            continue
+        try:
+            room_id = int(raw_room_id)
+        except ValueError:
+            continue
+        if room_id >= 0:
+            targets.append(room_target_id(room_id))
+    return targets
+
+
+def _discovered_rooms(entry: config_entries.ConfigEntry) -> list[NormanRoom]:
+    """Return the entry's live rooms in deterministic display order."""
+    coordinator = getattr(entry, "runtime_data", None)
+    if coordinator is None or coordinator.data is None:
+        return []
+    rooms: list[NormanRoom] = coordinator.data.rooms
+    return sorted(rooms, key=lambda item: clean_label(item.name))
 
 
 def _profile_schema(

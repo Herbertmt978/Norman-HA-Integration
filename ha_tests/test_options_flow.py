@@ -1,4 +1,4 @@
-"""Test numeric shutter-profile options."""
+"""Test Norman Gen 1 options."""
 
 from __future__ import annotations
 
@@ -7,7 +7,10 @@ from homeassistant.data_entry_flow import FlowResultType
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.norman_gen1.config_flow import _whole_position
+from custom_components.norman_gen1.config_flow import (
+    _stored_simultaneous_rooms,
+    _whole_position,
+)
 from custom_components.norman_gen1.const import (
     CONF_CLOSE_POSITION,
     CONF_DEFAULT_CLOSE_POSITION,
@@ -16,6 +19,7 @@ from custom_components.norman_gen1.const import (
     CONF_OPEN_POSITION,
     CONF_POSITION_PROFILES,
     CONF_REVERSED_CLOSE_TARGETS,
+    CONF_SIMULTANEOUS_ROOMS,
     CONF_TARGET,
     CONF_TILT_OPEN_TARGETS,
     DOMAIN,
@@ -60,7 +64,7 @@ async def test_menu_and_defaults_show_requested_values(
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.MENU
-    assert result["menu_options"] == ["defaults", "target"]
+    assert result["menu_options"] == ["defaults", "target", "room_commands"]
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
@@ -95,6 +99,104 @@ async def test_unloaded_entry_without_targets_offers_only_defaults(
 
     assert result["type"] is FlowResultType.MENU
     assert result["menu_options"] == ["defaults"]
+
+
+async def test_room_commands_abort_if_discovery_disappears(
+    hass: HomeAssistant,
+    setup_integration,
+) -> None:
+    """Defend a room-command step resumed after all rooms disappear."""
+    entry = setup_integration
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.MENU
+    entry.runtime_data.data.rooms.clear()
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"next_step_id": "room_commands"},
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_rooms"
+
+
+def test_stored_simultaneous_rooms_ignore_malformed_and_duplicate_targets() -> None:
+    """Retain only unique, non-negative room option IDs in stored order."""
+    assert _stored_simultaneous_rooms(
+        {
+            CONF_SIMULTANEOUS_ROOMS: [
+                1,
+                "room:2",
+                "room:2",
+                "group:3",
+                "room",
+                "room:not-a-number",
+                "room:-1",
+                "room:4",
+            ]
+        }
+    ) == ["room:2", "room:4"]
+
+
+async def test_room_commands_default_to_safe_fanout_and_preserve_options(
+    hass: HomeAssistant,
+    setup_integration,
+) -> None:
+    """Opt rooms into broadcasts without changing their position profiles."""
+    entry = setup_integration
+    original_options = dict(entry.options)
+    result = await _open_menu_step(hass, entry.entry_id, "room_commands")
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "room_commands"
+    room_selector = next(iter(result["data_schema"].schema.values()))
+    assert room_selector.config["options"] == [
+        {"value": "room:1", "label": "Living room"}
+    ]
+    assert room_selector.config["multiple"] is True
+    assert result["data_schema"]({}) == {CONF_SIMULTANEOUS_ROOMS: []}
+    validated = result["data_schema"]({CONF_SIMULTANEOUS_ROOMS: ["room:1"]})
+    assert validated == {CONF_SIMULTANEOUS_ROOMS: ["room:1"]}
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        validated,
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+
+    assert entry.options == {
+        **original_options,
+        CONF_SIMULTANEOUS_ROOMS: ["room:1"],
+    }
+
+    result = await _open_menu_step(hass, entry.entry_id, "room_commands")
+    assert result["data_schema"]({}) == {CONF_SIMULTANEOUS_ROOMS: ["room:1"]}
+
+
+async def test_room_commands_preserve_saved_rooms_missing_from_discovery(
+    hass: HomeAssistant,
+    setup_integration,
+) -> None:
+    """Do not erase an opt-in during a partial room discovery snapshot."""
+    entry = setup_integration
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **entry.options,
+            CONF_SIMULTANEOUS_ROOMS: ["room:99", "room:1"],
+        },
+    )
+    result = await _open_menu_step(hass, entry.entry_id, "room_commands")
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_SIMULTANEOUS_ROOMS: ["room:1"]},
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+
+    assert entry.options[CONF_SIMULTANEOUS_ROOMS] == ["room:99", "room:1"]
 
 
 async def test_target_step_aborts_if_discovery_disappears(

@@ -69,4 +69,5 @@ async def test_diagnostics_redact_config_and_whitelist_hub_fields(
         "default_open_position": 37,
         "default_close_position": 100,
         "profile_override_count": 2,
+        "simultaneous_room_ids": [],
     }

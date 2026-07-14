@@ -16,6 +16,7 @@ import aiohttp
 _LOGGER = logging.getLogger(__name__)
 DEFAULT_APP_VERSION = "2.11.21"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
+GROUP_COMMAND_DELAY_SECONDS = 1.0
 DEFAULT_OPEN_POSITION = 100
 DEFAULT_TILT_OPEN_POSITION = 37
 DEFAULT_CLOSE_POSITION = 0
@@ -319,10 +320,12 @@ class NormanGen1Api:
 
     async def full_open_room(self, room_id: int) -> None:
         """Send the hub's room-wide full-open command."""
+        _LOGGER.debug("Sending Norman room full-open command for room %s", room_id)
         await self._remote_control({"type": "fullopen", "action": 2, "id": room_id})
 
     async def full_close_room(self, room_id: int) -> None:
         """Send the hub's room-wide full-close command."""
+        _LOGGER.debug("Sending Norman room full-close command for room %s", room_id)
         await self._remote_control({"type": "fullclose", "action": 2, "id": room_id})
 
     async def set_group_position(
@@ -330,6 +333,13 @@ class NormanGen1Api:
     ) -> None:
         """Move one discovered room level to a raw hub position."""
         position = max(0, min(100, int(position)))
+        _LOGGER.debug(
+            "Sending Norman level command for room %s level %s: position=%s model=%s",
+            room_id,
+            level,
+            position,
+            model,
+        )
         await self._remote_control(
             {
                 "type": "level",
@@ -356,12 +366,20 @@ class NormanGen1Api:
                 f"Cannot set room {room_id} because no group levels were discovered"
             )
 
-        _LOGGER.debug(
-            "Controlling Norman room %s via %s group level command(s)",
-            room_id,
-            len(positions),
-        )
         levels = sorted(positions)
+        plan = [
+            {
+                "level": level,
+                "position": positions[level],
+                "model": models_by_level.get(level, 1) if models_by_level else 1,
+            }
+            for level in levels
+        ]
+        _LOGGER.debug(
+            "Controlling Norman room %s via group level command plan: %s",
+            room_id,
+            plan,
+        )
         for index, level in enumerate(levels):
             model = models_by_level.get(level, 1) if models_by_level else 1
             await self.set_group_position(
@@ -371,7 +389,7 @@ class NormanGen1Api:
                 model,
             )
             if index < len(levels) - 1:
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(GROUP_COMMAND_DELAY_SECONDS)
 
     async def _remote_control(self, payload: dict[str, Any]) -> dict[str, Any]:
         data = await self._post("RemoteControl", payload, allow_error_response=True)

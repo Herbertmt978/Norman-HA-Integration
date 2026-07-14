@@ -194,7 +194,7 @@ class TestRoomPositionControl(unittest.TestCase):
         ) as sleep:
             asyncio.run(api.set_room_positions(56548, {0: 37, 1: 100}))
 
-        sleep.assert_awaited_once_with(0.15)
+        sleep.assert_awaited_once_with(1.0)
 
     def test_room_positions_need_discovered_levels(self) -> None:
         api = RecordingApi()
