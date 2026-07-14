@@ -28,6 +28,7 @@ from custom_components.norman_gen1.api import (
     NormanRoom,
     NormanWindow,
     group_target_id,
+    room_target_id,
 )
 from custom_components.norman_gen1.config_flow import ConfigFlow
 from custom_components.norman_gen1.const import (
@@ -37,6 +38,7 @@ from custom_components.norman_gen1.const import (
     CONF_DEFAULT_OPEN_POSITION,
     CONF_OPEN_POSITION,
     CONF_POSITION_PROFILES,
+    CONF_SIMULTANEOUS_ROOMS,
     DEFAULT_APP_VERSION,
     DEFAULT_PASSWORD,
     DOMAIN,
@@ -138,6 +140,11 @@ class RecordingControlApi:
         self.host = "192.0.2.10"
         self.hub_info = {"hubId": "hub-1", "hubName": "Home"}
         self.calls: list[tuple[int, int, int, int]] = []
+        self.room_position_calls: list[
+            tuple[int, dict[int, int], dict[int, int] | None]
+        ] = []
+        self.full_open_room_calls: list[int] = []
+        self.full_close_room_calls: list[int] = []
 
     @property
     def hub_id(self) -> str:
@@ -151,6 +158,26 @@ class RecordingControlApi:
         self, room_id: int, level: int, position: int, model: int = 1
     ) -> None:
         self.calls.append((room_id, level, position, model))
+
+    async def set_room_positions(
+        self,
+        room_id: int,
+        positions_by_level: dict[int, int],
+        models_by_level: dict[int, int] | None = None,
+    ) -> None:
+        self.room_position_calls.append(
+            (
+                room_id,
+                dict(positions_by_level),
+                dict(models_by_level) if models_by_level is not None else None,
+            )
+        )
+
+    async def full_open_room(self, room_id: int) -> None:
+        self.full_open_room_calls.append(room_id)
+
+    async def full_close_room(self, room_id: int) -> None:
+        self.full_close_room_calls.append(room_id)
 
 
 class FailingControlApi(RecordingControlApi):
@@ -484,6 +511,218 @@ class TestEntityLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(selected.is_closed)
         self.assertFalse(unselected.is_closed)
 
+    async def test_room_extra_state_attributes_show_command_plan(self) -> None:
+        hass = FakeHass()
+        room = _room(1, style=99)
+        first = _window(1, 1, 1, model=2)
+        first.group_id = 51
+        second = _window(2, 1, 2, model=3)
+        coordinator = FakeCoordinator(hass, _coordinator_data([room], [first, second]))
+        entity = NormanRoomCover(
+            ConfigEntry(),
+            NormanGen1Api(object(), "192.0.2.10", DEFAULT_PASSWORD),
+            coordinator,
+            room,
+        )
+
+        self.assertEqual(
+            entity.extra_state_attributes,
+            {
+                "room_id": 1,
+                "window_ids": [1, 2],
+                "levels": [1, 2],
+                "simultaneous_room_selected": False,
+                "open_command": "level_fanout",
+                "close_command": "level_fanout",
+                "position_command": "level_fanout",
+                "level_command_plan": [
+                    {
+                        "level": 1,
+                        "model": 2,
+                        "group_ids": [51],
+                        "window_ids": [1],
+                        "open_position": 37,
+                        "close_position": 100,
+                    },
+                    {
+                        "level": 2,
+                        "model": 3,
+                        "group_ids": [],
+                        "window_ids": [2],
+                        "open_position": 37,
+                        "close_position": 100,
+                    },
+                ],
+            },
+        )
+
+    async def test_group_extra_state_attributes_show_command_target(self) -> None:
+        hass = FakeHass()
+        room = _room(1, style=99)
+        window = _window(1, 1, 2, model=3)
+        window.group_id = 51
+        coordinator = FakeCoordinator(hass, _coordinator_data([room], [window]))
+        entity = NormanGroupCover(
+            ConfigEntry(),
+            NormanGen1Api(object(), "192.0.2.10", DEFAULT_PASSWORD),
+            coordinator,
+            room,
+            2,
+            "Panel A",
+        )
+
+        self.assertEqual(
+            entity.extra_state_attributes,
+            {
+                "room_id": 1,
+                "level": 2,
+                "command_mode": "level_command",
+                "model": 3,
+                "group_ids": [51],
+                "window_ids": [1],
+                "open_position": 37,
+                "close_position": 100,
+            },
+        )
+
+    async def test_native_room_endpoints_fan_out_by_default(self) -> None:
+        hass = FakeHass()
+        room = _room(1, style=13)
+        windows = [_window(1, 1, 1, model=2), _window(2, 1, 2, model=3)]
+        coordinator = FakeCoordinator(hass, _coordinator_data([room], windows))
+        api = RecordingControlApi()
+        entity = NormanRoomCover(ConfigEntry(), api, coordinator, room)
+
+        await entity.async_open_cover()
+        await entity.async_close_cover()
+
+        self.assertEqual(
+            api.room_position_calls,
+            [
+                (1, {1: 37, 2: 37}, {1: 2, 2: 3}),
+                (1, {1: 100, 2: 100}, {1: 2, 2: 3}),
+            ],
+        )
+        self.assertEqual(api.full_open_room_calls, [])
+        self.assertEqual(api.full_close_room_calls, [])
+        await entity.async_will_remove_from_hass()
+
+    async def test_selected_room_uses_native_semantic_broadcasts(self) -> None:
+        hass = FakeHass()
+        room = _room(1, style=13)
+        windows = [_window(1, 1, 1), _window(2, 1, 2)]
+        coordinator = FakeCoordinator(hass, _coordinator_data([room], windows))
+        api = RecordingControlApi()
+        entry = ConfigEntry(
+            options={CONF_SIMULTANEOUS_ROOMS: [room_target_id(room.id)]}
+        )
+        entity = NormanRoomCover(entry, api, coordinator, room)
+
+        await entity.async_open_cover()
+        await entity.async_close_cover()
+
+        self.assertEqual(api.full_open_room_calls, [1])
+        self.assertEqual(api.full_close_room_calls, [1])
+        self.assertEqual(api.room_position_calls, [])
+        await entity.async_will_remove_from_hass()
+
+    async def test_room_position_stays_exact_fanout_when_broadcast_selected(
+        self,
+    ) -> None:
+        hass = FakeHass()
+        room = _room(1, style=13)
+        windows = [_window(1, 1, 1), _window(2, 1, 2)]
+        coordinator = FakeCoordinator(hass, _coordinator_data([room], windows))
+        api = RecordingControlApi()
+        entry = ConfigEntry(
+            options={CONF_SIMULTANEOUS_ROOMS: [room_target_id(room.id)]}
+        )
+        entity = NormanRoomCover(entry, api, coordinator, room)
+
+        await entity.async_set_cover_position(**{ATTR_POSITION: 100})
+
+        self.assertEqual(api.room_position_calls, [(1, {1: 37, 2: 37}, {1: 1, 2: 1})])
+        self.assertEqual(api.full_open_room_calls, [])
+        await entity.async_will_remove_from_hass()
+
+    async def test_room_without_levels_falls_back_to_safe_native_broadcast(
+        self,
+    ) -> None:
+        hass = FakeHass()
+        room = _room(1, style=13)
+        coordinator = FakeCoordinator(
+            hass, _coordinator_data([room], [_window(1, 1, -1)])
+        )
+        api = RecordingControlApi()
+        entity = NormanRoomCover(ConfigEntry(), api, coordinator, room)
+
+        await entity.async_open_cover()
+        await entity.async_close_cover()
+
+        self.assertEqual(api.full_open_room_calls, [1])
+        self.assertEqual(api.full_close_room_calls, [1])
+        self.assertEqual(api.room_position_calls, [])
+        self.assertEqual(
+            entity.supported_features,
+            CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE,
+        )
+        await entity.async_will_remove_from_hass()
+
+    async def test_selected_room_never_broadcasts_a_non_native_endpoint(self) -> None:
+        hass = FakeHass()
+        room = _room(1, style=13)
+        windows = [_window(1, 1, 1), _window(2, 1, 2)]
+        coordinator = FakeCoordinator(hass, _coordinator_data([room], windows))
+        api = RecordingControlApi()
+        entry = ConfigEntry(
+            options={
+                CONF_SIMULTANEOUS_ROOMS: [room_target_id(room.id)],
+                CONF_POSITION_PROFILES: {
+                    room_target_id(room.id): {
+                        CONF_OPEN_POSITION: 42,
+                        CONF_CLOSE_POSITION: 100,
+                    }
+                },
+            }
+        )
+        entity = NormanRoomCover(entry, api, coordinator, room)
+
+        await entity.async_open_cover()
+        await entity.async_close_cover()
+
+        self.assertEqual(api.room_position_calls, [(1, {1: 42, 2: 42}, {1: 1, 2: 1})])
+        self.assertEqual(api.full_open_room_calls, [])
+        self.assertEqual(api.full_close_room_calls, [1])
+        self.assertEqual(entity.extra_state_attributes["open_command"], "level_fanout")
+        self.assertEqual(
+            entity.extra_state_attributes["close_command"], "room_broadcast"
+        )
+        await entity.async_will_remove_from_hass()
+
+    async def test_non_native_endpoint_without_levels_is_unsupported(self) -> None:
+        hass = FakeHass()
+        room = _room(1, style=13)
+        coordinator = FakeCoordinator(hass, _coordinator_data([room], []))
+        api = RecordingControlApi()
+        entry = ConfigEntry(
+            options={
+                CONF_SIMULTANEOUS_ROOMS: [room_target_id(room.id)],
+                CONF_POSITION_PROFILES: {
+                    room_target_id(room.id): {
+                        CONF_OPEN_POSITION: 42,
+                        CONF_CLOSE_POSITION: 100,
+                    }
+                },
+            }
+        )
+        entity = NormanRoomCover(entry, api, coordinator, room)
+
+        with self.assertRaises(HomeAssistantError):
+            await entity.async_open_cover()
+
+        self.assertEqual(api.full_open_room_calls, [])
+        self.assertEqual(api.room_position_calls, [])
+
     async def test_opposite_tilt_end_stops_make_the_room_closed(self) -> None:
         hass = FakeHass()
         room = _room(1, style=2)
@@ -778,6 +1017,10 @@ class TestDiagnostics(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Private Home", rendered)
         self.assertEqual(result["snapshot"]["room_count"], 1)
         self.assertEqual(result["snapshot"]["window_count"], 1)
+        self.assertEqual(result["snapshot"]["rooms"][0]["room_id"], 1)
+        self.assertEqual(result["snapshot"]["rooms"][0]["open_command"], "level_fanout")
+        self.assertEqual(result["snapshot"]["windows"][0]["window_id"], 1)
+        self.assertEqual(result["snapshot"]["windows"][0]["room_id"], 1)
 
 
 class TestConfigFlow(unittest.IsolatedAsyncioTestCase):

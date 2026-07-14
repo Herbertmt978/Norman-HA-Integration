@@ -57,6 +57,7 @@
   "options": {
     "abort": {
       "migration_pending": "Set up the integration successfully once before changing these options so the existing movement directions can be migrated safely.",
+      "no_rooms": "No rooms are currently available to configure.",
       "no_targets": "No rooms or panels are available to configure.",
       "target_unavailable": "The selected room or panel is no longer available."
     },
@@ -68,10 +69,21 @@
     "step": {
       "init": {
         "title": "Norman Gen 1 Hub options",
-        "description": "Set the raw positions used by the native Open and Close cover controls. Room settings are inherited by their panels unless a panel has its own override.",
+        "description": "Configure shutter positions and how native Open and Close commands are sent.",
         "menu_options": {
           "defaults": "Default positions",
-          "target": "Room or panel positions"
+          "target": "Room or panel positions",
+          "room_commands": "Room commands"
+        }
+      },
+      "room_commands": {
+        "title": "Room commands",
+        "description": "Choose which rooms are allowed to use one simultaneous room broadcast for native Open and Close commands. Unselected rooms use separate panel-group commands for reliability.",
+        "data": {
+          "simultaneous_rooms": "Simultaneous room broadcasts"
+        },
+        "data_description": {
+          "simultaneous_rooms": "Select only rooms where one Open or Close room command has been confirmed to move every panel correctly."
         }
       },
       "defaults": {

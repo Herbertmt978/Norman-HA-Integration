@@ -109,9 +109,11 @@ Open **Configure** on the integration to change the defaults or set an override 
 
 Existing v0.2 installations are migrated to exact numeric profiles after the first successful discovery. Their current effective Open and Closed directions are retained; the 37/100 defaults apply to new installations and newly discovered targets. Existing cover unique IDs and automation targets are unchanged.
 
-The ordinary arrows on Home Assistant's device page are its native Open and Close controls, not one-point steps. The position slider remains available for other positions. A room Open or Close uses the hub's one room-wide broadcast when every panel target matches the hub-native room profile, so those motors start together. If panel overrides differ, the integration sends the exact configured group targets sequentially inside the same authenticated transaction rather than ignoring an override.
+The ordinary arrows on Home Assistant's device page are its native Open and Close controls, not one-point steps. The position slider remains available for other positions. Room commands use the correlated panel levels by default, sending each exact target one second apart inside the same authenticated transaction. This paced path is more reliable across the Gen 1 firmware variants seen so far.
 
-If a room has no usable panel levels, only Open or Close commands that exactly match a safe hub-native room broadcast are exposed.
+Under **Configure → Room commands**, a room can be explicitly allowed to use the hub's single room-wide Open or Close broadcast. The integration uses that path only when the configured endpoint exactly matches the hub-native semantic command; a non-native endpoint still uses exact level commands. Position-slider commands always use exact level commands, including `0%` and `100%`.
+
+If a room has no usable panel levels, only Open or Close commands that exactly match a safe hub-native room broadcast are exposed. This fallback does not require the simultaneous-command option because no exact level path is available.
 
 ## Automations
 
@@ -155,7 +157,7 @@ Use **Reconfigure** to change the host, password, or app version. A host change 
 
 ## Diagnostics and privacy
 
-Downloaded diagnostics include normalized counts, positions, styles, movement options, and a small whitelist of safe firmware/status fields. They exclude the host, password, hub ID, hub name, room/window names, raw device payloads, and all unknown login-payload fields.
+Downloaded diagnostics include normalized counts, positions, styles, movement options, effective room command modes, and numeric room/window correlation IDs. They exclude the host, password, hub ID, hub name, room/window names, raw device payloads, and all unknown login-payload fields.
 
 ## Removal
 
@@ -168,16 +170,29 @@ Remove the config entry from **Settings → Devices & services**. Home Assistant
 - **Invalid authentication:** try the factory password `123456789` unless the hub password was changed.
 - **No devices:** confirm rooms and shutters are visible to the official Norman app and paired with the hub.
 - **Command accepted but the shutter did not move:** the hub cannot confirm RF delivery to a motor. Check hub RF range, motor battery, pairing, and the Norman USB repeaters.
+- **A whole-room cover moves only one panel or no panels:** inspect that cover's
+  state attributes in Home Assistant. `open_command` and `close_command` show
+  whether the integration is using the hub's room broadcast or sequential
+  `level_fanout`; `level_command_plan` shows the level, model, group IDs, and
+  raw positions that will be sent. Enable debug logging for
+  `custom_components.norman_gen1` to capture the same safe command plan in the
+  logs.
 - **Wrong direction:** use the per-room or per-panel movement-profile options.
 - **Official app and Home Assistant:** both can use independent hub sessions. Update to the latest integration version so every Home Assistant transaction is serialized and logged out cleanly.
 - **Weak shutter radio signal:** keep the Norman USB repeaters powered and positioned within the proprietary RF network. ESPHome Bluetooth proxies do not extend this link.
-- **HACS icon is unavailable:** Home Assistant 2026.3 or newer can serve the bundled custom-integration brand images locally. Restart Home Assistant after installing or updating the integration, then refresh the browser. HACS versions that still use the public Brands service may continue to show a placeholder; this does not affect the integration itself.
+- **HACS icon is unavailable:** Home Assistant 2026.3 or newer can serve the
+  bundled custom-integration brand images locally. Restart Home Assistant after
+  installing or updating the integration, then refresh the browser. HACS 2.0.5
+  still uses the retired public Brands service for parts of its dashboard, so
+  it may show a placeholder until
+  [its local-brand fix](https://github.com/hacs/integration/issues/5171) ships;
+  this does not affect the integration itself.
 
 ## Known limitations
 
 - Hardware testing is currently limited to one Gen 1 hub; payloads from other firmware and regional variants are welcome.
 - The hub does not reliably acknowledge accepted commands and cannot confirm whether a motor physically moved. Home Assistant still reports transport, authentication, malformed-response, and explicit hub errors.
-- A room-wide broadcast is available only when all configured panel targets match the hub-native command. Mixed or non-native profiles necessarily use exact sequential group commands.
+- A room-wide broadcast is available only as a no-level fallback or for explicitly selected rooms whose configured endpoint matches the hub-native command. Mixed or non-native profiles necessarily use exact sequential level commands.
 - A panel entity represents one commandable room level. Firmware may report multiple window records for the same level; those records remain one aggregate control.
 - Battery sensors represent the individual physical window/motor records and are attached to the existing room device so the room-grouped UI remains intact.
 - Direct proprietary RF or Bluetooth control is not provided; commands intentionally pass through the Norman hub and repeaters.
@@ -200,6 +215,12 @@ Real Home Assistant tests use `requirements_ha_minimum.txt` or `requirements_ha_
 An eventual Home Assistant Core submission will also require extracting the protocol client into a typed asynchronous PyPI package, adding the Core-specific manifest/quality-scale files, and preparing separate documentation and brands pull requests. The integration code and behavioral tests are structured to make that extraction mechanical rather than architectural.
 
 ## Changelog
+
+### 0.3.3
+
+- Makes paced, exact level commands the reliable default for whole-room Open, Close, and position control.
+- Adds an explicit per-room option for simultaneous native Open/Close broadcasts, while retaining safe broadcast fallback for rooms without usable levels.
+- Exposes the effective command route and privacy-safe numeric room/window correlations in entity attributes and diagnostics.
 
 ### 0.3.2
 
