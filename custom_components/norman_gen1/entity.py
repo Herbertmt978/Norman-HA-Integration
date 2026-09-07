@@ -64,7 +64,7 @@ class NormanBaseCover(CoordinatorEntity[NormanDataUpdateCoordinator], CoverEntit
         self._optimistic_position: int | None = None
         self._refresh_generation = 0
         self._refresh_task: asyncio.Task[None] | None = None
-        self._attr_device_info = room_device_info(api, room)
+        self._attr_device_info = room_device_info(api, room, coordinator.hub_device_id)
 
     @property
     def available(self) -> bool:

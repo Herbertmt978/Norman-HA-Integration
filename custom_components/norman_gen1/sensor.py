@@ -124,7 +124,7 @@ class NormanWindowBatterySensor(
         translation_key, placeholders = self._motor_label_translation(window, label)
         self._attr_translation_key = translation_key
         self._attr_translation_placeholders = placeholders
-        self._attr_device_info = room_device_info(api, room)
+        self._attr_device_info = room_device_info(api, room, coordinator.hub_device_id)
 
     @staticmethod
     def _motor_label_translation(
@@ -182,7 +182,7 @@ class NormanWindowBatterySensor(
             if room is not None:
                 device = dr.async_get(self.hass).async_get_or_create(
                     config_entry_id=self._entry.entry_id,
-                    **room_device_info(self._api, room),
+                    **room_device_info(self._api, room, self.coordinator.hub_device_id),
                 )
                 if self.entity_id is not None:
                     registry = er.async_get(self.hass)
@@ -195,6 +195,8 @@ class NormanWindowBatterySensor(
                             self.entity_id,
                             device_id=device.id,
                         )
-                self._attr_device_info = room_device_info(self._api, room)
+                self._attr_device_info = room_device_info(
+                    self._api, room, self.coordinator.hub_device_id
+                )
                 self._room_id = room.id
         super()._handle_coordinator_update()

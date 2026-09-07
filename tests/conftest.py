@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import IntFlag, StrEnum
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, TypeVar
 
 
@@ -253,8 +253,8 @@ device_registry.DeviceInfo = DeviceInfo
 class DeviceRegistry:
     """Minimal device registry accepting device creation calls."""
 
-    def async_get_or_create(self, **kwargs: Any) -> None:
-        return None
+    def async_get_or_create(self, **kwargs: Any) -> Any:
+        return SimpleNamespace(id="hub-registry-id")
 
 
 def async_get_device_registry(hass: Any) -> DeviceRegistry:

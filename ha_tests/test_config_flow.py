@@ -29,6 +29,8 @@ from custom_components.norman_gen1.const import (
     DOMAIN,
 )
 
+from .helpers import find_device
+
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
 
@@ -55,8 +57,8 @@ def _add_legacy_registry_entries(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, f"{old_hub_id}_room_1")},
         name="Legacy living room",
-        via_device=(DOMAIN, old_hub_id),
     )
+    dr.async_get(hass).async_update_device(room_device.id, via_device_id=device.id)
     registry = er.async_get(hass)
     room = registry.async_get_or_create(
         COVER_DOMAIN,
@@ -116,15 +118,15 @@ def _assert_legacy_registry_was_migrated(
     assert battery.unique_id == "hub-1_window_1_battery"
     assert battery.device_id == old_room_device_id
     device_registry = dr.async_get(hass)
-    device = device_registry.async_get_device({(DOMAIN, "hub-1")})
+    device = find_device(device_registry, entry.entry_id, "hub-1")
     assert device is not None
     assert device.id == old_device_id
-    assert device_registry.async_get_device({(DOMAIN, old_hub_id)}) is None
-    room_device = device_registry.async_get_device({(DOMAIN, "hub-1_room_1")})
+    assert find_device(device_registry, entry.entry_id, old_hub_id) is None
+    room_device = find_device(device_registry, entry.entry_id, "hub-1_room_1")
     assert room_device is not None
     assert room_device.id == old_room_device_id
     assert room_device.via_device_id == old_device_id
-    assert device_registry.async_get_device({(DOMAIN, f"{old_hub_id}_room_1")}) is None
+    assert find_device(device_registry, entry.entry_id, f"{old_hub_id}_room_1") is None
 
 
 async def test_user_flow_uses_factory_default_and_creates_entry(

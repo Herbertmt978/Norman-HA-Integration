@@ -58,6 +58,7 @@ class NormanDataUpdateCoordinator(DataUpdateCoordinator[NormanData]):
             always_update=False,
         )
         self.api = api
+        self.hub_device_id: str | None = None
         self._known_rooms_by_id: dict[int, NormanRoom] = {}
 
     async def _async_update_data(self) -> NormanData:

@@ -112,6 +112,7 @@ class FakeClientSession:
 
 class FakeCoordinator:
     def __init__(self, hass: FakeHass, data: dict) -> None:
+        self.hub_device_id = "hub-registry-id"
         self.hass = hass
         self.data = data
         self.last_update_success = True
