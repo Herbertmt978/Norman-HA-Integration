@@ -53,10 +53,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: NormanConfigEntry) -> bo
         hass.config_entries.async_update_entry(entry, unique_id=api.hub_id)
     api.pin_hub_id(api.hub_id)
     _migrate_profile_options(hass, entry, coordinator)
-    dr.async_get(hass).async_get_or_create(
+    hub_device = dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,
         **hub_device_info(api),
     )
+    coordinator.hub_device_id = hub_device.id
 
     _LOGGER.info(
         "Discovered Norman Gen 1 hub with %s room(s), %s shutter device(s), and %s group(s)",

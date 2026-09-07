@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from homeassistant.helpers.device_registry import DeviceInfo
 
 from .api import NormanGen1Api, NormanRoom
 from .const import DOMAIN, MANUFACTURER
 from .helpers import clean_label
+
+_SUPPORTS_VIA_DEVICE_ID = "via_device_id" in getattr(DeviceInfo, "__annotations__", {})
 
 
 def hub_device_identifier(hub_id: str) -> tuple[str, str]:
@@ -38,14 +42,25 @@ def hub_device_info(api: NormanGen1Api) -> DeviceInfo:
     )
 
 
-def room_device_info(api: NormanGen1Api, room: NormanRoom) -> DeviceInfo:
+def room_device_info(
+    api: NormanGen1Api, room: NormanRoom, hub_device_id: str | None
+) -> DeviceInfo:
     """Return one logical room device routed through the Norman hub."""
     room_name = clean_label(room.name)
-    return DeviceInfo(
+    info = DeviceInfo(
         identifiers={room_device_identifier(api.hub_id, room.id)},
         name=room_name,
         manufacturer=MANUFACTURER,
         model="Room",
         suggested_area=room_name,
-        via_device=hub_device_identifier(api.hub_id),
     )
+    if _SUPPORTS_VIA_DEVICE_ID:
+        if hub_device_id is None:
+            raise ValueError("Register the Norman hub before creating room devices")
+        # Type definitions differ across the supported HA versions.
+        info.update(cast(DeviceInfo, {"via_device_id": hub_device_id}))
+    else:
+        # HA 2024.11 through 2026.7 accepts only the identifier-based field.
+        # Keep this compatibility branch until the minimum supported HA moves.
+        info.update(cast(DeviceInfo, {"via_device": hub_device_identifier(api.hub_id)}))
+    return info

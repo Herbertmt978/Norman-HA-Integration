@@ -216,6 +216,12 @@ An eventual Home Assistant Core submission will also require extracting the prot
 
 ## Changelog
 
+### 0.3.4
+
+- Uses the registered hub's device ID to preserve room and battery-device links on newer Home Assistant versions.
+- Retains compatibility with Home Assistant 2024.11 and older supported device-registry APIs.
+- Leaves entity IDs, room command settings, position profiles, and automations unchanged.
+
 ### 0.3.3
 
 - Makes paced, exact level commands the reliable default for whole-room Open, Close, and position control.

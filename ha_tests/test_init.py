@@ -32,6 +32,9 @@ from custom_components.norman_gen1.const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
 )
+from custom_components.norman_gen1.device import room_device_info
+
+from .helpers import find_device
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
@@ -71,18 +74,26 @@ async def test_setup_registers_entities_device_and_unloads(
     assert hass.states.get(entities["hub-1_room_1_level_1"].entity_id).state == "closed"
 
     device_registry = dr.async_get(hass)
-    hub_device = device_registry.async_get_device(identifiers={(DOMAIN, "hub-1")})
+    hub_device = find_device(device_registry, entry.entry_id, "hub-1")
     assert hub_device is not None
     assert hub_device.manufacturer == "Norman"
     assert hub_device.model == "Gen 1 Hub"
     assert hub_device.sw_version == "1.0"
 
-    room_device = device_registry.async_get_device(
-        identifiers={(DOMAIN, "hub-1_room_1")}
-    )
+    room_device = find_device(device_registry, entry.entry_id, "hub-1_room_1")
     assert room_device is not None
     assert room_device.name == "Living room"
     assert room_device.via_device_id == hub_device.id
+    assert entry.runtime_data.hub_device_id == hub_device.id
+    if "via_device_id" in dr.DeviceInfo.__annotations__:
+        # Modern HA must receive the registered, config-entry-scoped parent ID.
+        info = room_device_info(
+            entry.runtime_data.api,
+            entry.runtime_data.data.rooms[0],
+            entry.runtime_data.hub_device_id,
+        )
+        assert info["via_device_id"] == hub_device.id
+        assert "via_device" not in info
     living_room_area = ar.async_get(hass).async_get_area_by_name("Living room")
     assert living_room_area is not None
     assert room_device.area_id == living_room_area.id
@@ -211,11 +222,9 @@ async def test_dynamic_room_and_group_are_added_after_natural_refresh(
     assert hass.states.get(entities["hub-1_room_2"].entity_id).state == "closed"
 
     device_registry = dr.async_get(hass)
-    hub_device = device_registry.async_get_device(identifiers={(DOMAIN, "hub-1")})
+    hub_device = find_device(device_registry, entry.entry_id, "hub-1")
     assert hub_device is not None
-    dining_room_device = device_registry.async_get_device(
-        identifiers={(DOMAIN, "hub-1_room_2")}
-    )
+    dining_room_device = find_device(device_registry, entry.entry_id, "hub-1_room_2")
     assert dining_room_device is not None
     assert dining_room_device.name == "Dining room"
     assert dining_room_device.via_device_id == hub_device.id
@@ -422,13 +431,13 @@ async def test_setup_upgrades_legacy_host_unique_id(
     assert set(entities) == {"hub-1_room_1", "hub-1_room_1_level_1"}
     assert entities["hub-1_room_1"].entity_id == legacy_room.entity_id
     assert entities["hub-1_room_1_level_1"].entity_id == legacy_group.entity_id
-    migrated_device = device_registry.async_get_device({(DOMAIN, "hub-1")})
+    migrated_device = find_device(device_registry, mock_config_entry.entry_id, "hub-1")
     assert migrated_device is not None
     assert migrated_device.id == legacy_device.id
-    assert device_registry.async_get_device({(DOMAIN, old_hub_id)}) is None
+    assert find_device(device_registry, mock_config_entry.entry_id, old_hub_id) is None
 
-    room_device = device_registry.async_get_device(
-        identifiers={(DOMAIN, "hub-1_room_1")}
+    room_device = find_device(
+        device_registry, mock_config_entry.entry_id, "hub-1_room_1"
     )
     assert room_device is not None
     assert room_device.via_device_id == migrated_device.id
@@ -480,8 +489,8 @@ async def test_setup_migrates_v021_entity_customizations_to_room_device(
     entities = _integration_entities(hass, mock_config_entry.entry_id)
     room = entities["hub-1_room_1"]
     group = entities["hub-1_room_1_level_1"]
-    room_device = device_registry.async_get_device(
-        identifiers={(DOMAIN, "hub-1_room_1")}
+    room_device = find_device(
+        device_registry, mock_config_entry.entry_id, "hub-1_room_1"
     )
     assert room_device is not None
     assert room.id == old_room.id

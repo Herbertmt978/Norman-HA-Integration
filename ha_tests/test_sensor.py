@@ -22,6 +22,8 @@ import pytest
 from custom_components.norman_gen1.api import NormanRoom, NormanWindow
 from custom_components.norman_gen1.const import DOMAIN
 
+from .helpers import find_device
+
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
 
@@ -106,8 +108,8 @@ async def test_physical_windows_create_room_battery_diagnostics(
         "hub-1_window_12_battery",
     }
 
-    room_device = dr.async_get(hass).async_get_device(
-        identifiers={(DOMAIN, "hub-1_room_1")}
+    room_device = find_device(
+        dr.async_get(hass), mock_config_entry.entry_id, "hub-1_room_1"
     )
     assert room_device is not None
 
@@ -402,9 +404,7 @@ async def test_motor_room_change_keeps_one_stable_battery_entity(
     entities = _battery_entities(hass, entry.entry_id)
     assert set(entities) == {"hub-1_window_1_battery"}
     assert hass.states.get(entities["hub-1_window_1_battery"].entity_id).state == "55"
-    moved_room_device = dr.async_get(hass).async_get_device(
-        identifiers={(DOMAIN, "hub-1_room_2")}
-    )
+    moved_room_device = find_device(dr.async_get(hass), entry.entry_id, "hub-1_room_2")
     assert moved_room_device is not None
     assert entities["hub-1_window_1_battery"].device_id == moved_room_device.id
 
