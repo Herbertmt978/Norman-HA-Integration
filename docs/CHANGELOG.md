@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.1 — 10 September 2026
+## 0.4.1 â€” 10 September 2026
 
 - Preserve accepted ShadeAuto rail targets across delayed status reads and serialize overlapping commands.
 - Handle notification connection timeouts as failures with the normal retry delay.
