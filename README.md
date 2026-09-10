@@ -22,10 +22,8 @@ cloud account. This project is independent of Norman.
 
 ## Installation
 
-This README describes the combined-generation implementation on `main`, prepared
-as **0.4.0**. It has not yet been published as a tagged release. To try it before
-release, use the manual method below to install the `main` branch. HACS normally
-installs the latest tagged release.
+Version **0.4.0** adds support for both generations. Install the latest release
+through HACS, or use the manual method below.
 
 [![Open this repository in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Herbertmt978&repository=Norman-HA-Integration&category=integration)
 
@@ -108,8 +106,9 @@ over that local HTTP connection. ShadeAuto uses its local registration API.
 
 Gen 1 has been checked against an existing physical hub. Gen 2 derives from
 keito's SmartDrape/two-rail implementation and has passed automated protocol and
-real Home Assistant runtime tests with an HTTP hub fixture. **Physical Gen 2
-hardware testing remains outstanding for this combined implementation.**
+real Home Assistant runtime tests with an HTTP hub fixture. Gen 2 hardware
+confidence comes from [keito's upstream SmartDrape testing](https://github.com/keito/home-assistant-norman/);
+this combined implementation has not been separately tested on physical Gen 2 hardware.
 Other device-specific mappings need verified device data. No unverified stop
 command or direct RF/Bluetooth control is advertised.
 
