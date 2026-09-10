@@ -135,7 +135,7 @@ async def test_user_flow_uses_factory_default_and_creates_entry(
 ) -> None:
     """The real flow manager should retain the known factory password default."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
+        DOMAIN, context={"source": SOURCE_USER}, data={"generation": "gen1"}
     )
 
     assert result["type"] is FlowResultType.FORM
@@ -178,7 +178,7 @@ async def test_user_flow_uses_fallback_title_when_hub_name_is_missing(
     """Create a safely named entry when optional hub metadata is absent."""
     mock_norman_api.hub_info.pop("hubName")
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
+        DOMAIN, context={"source": SOURCE_USER}, data={"generation": "gen1"}
     )
 
     result = await hass.config_entries.flow.async_configure(
@@ -300,7 +300,7 @@ async def test_user_flow_recovers_after_client_error(
 ) -> None:
     """Recover on the same public flow after every mapped client failure."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
+        DOMAIN, context={"source": SOURCE_USER}, data={"generation": "gen1"}
     )
     mock_norman_api.auth_error = error
 
@@ -329,7 +329,7 @@ async def test_user_flow_recovers_after_no_devices(
     mock_norman_api.rooms = []
     mock_norman_api.windows = []
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
+        DOMAIN, context={"source": SOURCE_USER}, data={"generation": "gen1"}
     )
 
     result = await hass.config_entries.flow.async_configure(
@@ -353,7 +353,7 @@ async def test_user_flow_retries_one_rejected_session(
     """Retry validation once when the hub rejects a transient session."""
     mock_norman_api.auth_errors = [InvalidSession("expired"), None]
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
+        DOMAIN, context={"source": SOURCE_USER}, data={"generation": "gen1"}
     )
 
     result = await hass.config_entries.flow.async_configure(
@@ -374,7 +374,7 @@ async def test_user_flow_maps_two_rejected_sessions_to_connection_error(
         InvalidSession("expired again"),
     ]
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
+        DOMAIN, context={"source": SOURCE_USER}, data={"generation": "gen1"}
     )
 
     result = await hass.config_entries.flow.async_configure(
@@ -404,7 +404,7 @@ async def test_user_flow_rejects_unsafe_host_shapes(
 ) -> None:
     """Accept only a bare host/port or root HTTP URL."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
+        DOMAIN, context={"source": SOURCE_USER}, data={"generation": "gen1"}
     )
 
     result = await hass.config_entries.flow.async_configure(
@@ -422,7 +422,7 @@ async def test_user_flow_normalizes_ipv6_and_blank_app_version(
 ) -> None:
     """Canonicalize IPv6 and use the known app default for a blank value."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
+        DOMAIN, context={"source": SOURCE_USER}, data={"generation": "gen1"}
     )
     user_input = _user_input("http://[2001:db8::1]:8080/")
     user_input[CONF_APP_VERSION] = ""
@@ -445,7 +445,7 @@ async def test_user_flow_rejects_invalid_host_then_recovers(
 ) -> None:
     """Reject URL credentials and paths without calling the client."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
+        DOMAIN, context={"source": SOURCE_USER}, data={"generation": "gen1"}
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], _user_input("http://user:secret@hub.local/admin?x=1")
@@ -468,7 +468,7 @@ async def test_duplicate_hub_aborts_and_updates_host(
 ) -> None:
     """Keep one entry per physical hub while accepting a corrected host."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
+        DOMAIN, context={"source": SOURCE_USER}, data={"generation": "gen1"}
     )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], _user_input("192.0.2.20")
@@ -488,7 +488,7 @@ async def test_duplicate_loaded_hub_validation_uses_runtime_lock(
     entry = setup_integration
     runtime_lock = entry.runtime_data.api.transaction_lock
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
+        DOMAIN, context={"source": SOURCE_USER}, data={"generation": "gen1"}
     )
 
     result = await hass.config_entries.flow.async_configure(

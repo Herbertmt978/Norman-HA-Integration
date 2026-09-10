@@ -7,6 +7,7 @@ from typing import Any
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
+from .const import CONF_GENERATION, GEN1, GEN2
 from .coordinator import NormanConfigEntry
 from .cover import resolve_room_command_routing
 from .profiles import resolve_default_profile, stored_position_profiles
@@ -21,6 +22,14 @@ async def async_get_config_entry_diagnostics(
     entry: NormanConfigEntry,
 ) -> dict[str, Any]:
     """Return privacy-safe diagnostics for a Norman Gen 1 hub."""
+    if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
+        from .gen2 import gen2_coordinator  # noqa: PLC0415
+
+        return {
+            "generation": GEN2,
+            "device_count": len(gen2_coordinator(entry).data),
+            "connected": entry.runtime_data.last_update_success,
+        }
     coordinator = entry.runtime_data
     api = coordinator.api
     data = coordinator.data

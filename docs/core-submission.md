@@ -1,12 +1,12 @@
 # Home Assistant Core submission checklist
 
-This repository is the HACS/custom-integration release track. A Core pull request should be prepared from current `home-assistant/core` development rather than copying HACS-only metadata unchanged.
+This repository is the HACS/custom-integration track for Gen 1 and Gen 2 (ShadeAuto). A Core pull request should be prepared from current `home-assistant/core` development rather than copying HACS-only metadata unchanged.
 
 ## Before opening the Core pull request
 
 - Confirm the permanent integration domain (`norman_gen1` or another maintainer-approved name) before creating brands and documentation entries.
-- Confirm with maintainers that the continuing Gen 1 user base and locally reachable hardware meet Core's integration eligibility expectations.
-- Extract `api.py` into a small typed, asynchronous Python package with its own parser, transport, session, identity, and command tests.
+- Confirm with maintainers that the supported generations, their user bases and locally reachable hardware meet Core's integration eligibility expectations.
+- Extract the Gen 1 `api.py` and Gen 2 `gen2/api.py` protocol clients into appropriately scoped typed, asynchronous Python packages, retaining their licenses and parser, transport, session, identity and command tests.
 - Publish the package to PyPI with GitHub trusted publishing/OIDC and a provenance attestation. Do not use a static PyPI token or an unguarded manual release workflow.
 - Pin the released package in the Core manifest and include its logger.
 - Keep the initial submission focused on the `cover` platform and only the movement options required for safe control. The diagnostic battery sensor is isolated in its own platform so it can be included when reviewers accept the physical-window model or deferred to a follow-up. Be prepared to defer diagnostics, reauthentication, reconfiguration, and dynamic discovery if reviewers request a smaller Bronze first pull request.
@@ -18,7 +18,7 @@ This repository is the HACS/custom-integration release track. A Core pull reques
 - Use `ConfigEntry[Coordinator]`, `entry.runtime_data`, `config_entry=entry`, injected Home Assistant sessions, and current callback/result types.
 - Replace the custom integration's Home Assistant 2024.11 options-entry compatibility lookup with the current `self.config_entry` property.
 - Generate `quality_scale.yaml` against current Core immediately before submission. Include every rule required by the current schema, including rules that are exempt; do not copy stale rule lists.
-- Mark dynamic-device and stale-device rules honestly. This integration adds newly discovered entities but intentionally leaves missing entities unavailable rather than removing registry devices.
+- Mark dynamic-device and stale-device rules honestly. Gen 1 adds newly discovered entities and intentionally leaves missing entities unavailable rather than removing registry devices. Gen 2 discovers its peripheral metadata at setup and requires a reload after pairing more peripherals.
 - Add or update generated Core metadata only through Hassfest.
 
 ## Test expectations transferred from ScorpionTrack review
@@ -35,7 +35,7 @@ This repository is the HACS/custom-integration release track. A Core pull reques
 - If batteries are included, test normalized 0–100 values, unknown versus unavailable, dynamic physical-window discovery, translated names, stable IDs, and proof that sensors add no client calls.
 - Maintain more than 95% integration coverage and 100% branch coverage for config, reauth, reconfigure, and options flows.
 
-## Battery topology decision
+## Gen 1 battery topology decision
 
 The HACS release creates one sensor per physical `getWindowInfo` record but attaches those sensors to the existing room device. Battery display names use the same room/level join as their commandable group cover; multiple physical motors behind one level receive translated motor numbers in the normalized hub slot order, with physical window ID as the fallback and entity identity. A change to a known motor's correlated label or motor number schedules one config-entry reload rather than mutating Home Assistant's private entity-name caches. This preserves the user-facing hub → room → controls layout while group covers remain the commandable units. Revisit this explicitly with Core reviewers: separate physical child devices may be more literal, but would fragment covers from their motor diagnostics and add one device per shutter. The sensor platform consumes the cover coordinator snapshot and must never introduce a second update coordinator or polling interval.
 
@@ -50,3 +50,10 @@ The Gen 1 `RemoteControl` endpoint is fire-and-forget and does not reliably incl
 - Run Ruff format/check, Hassfest, mypy, pylint, the requirements generators/checks, and the full component test directory in a clean Linux Core environment.
 - Regenerate and inspect derived files after rebasing onto current `dev`.
 - Avoid force-pushing or renaming the branch once maintainer review has begun.
+
+## Gen 2 qualification
+
+Preserve the generation selector, ShadeAuto registration identity, two-rail control
+semantics, notification reconnect/cleanup and action selectors. Retain Apache-2.0
+attribution for the imported code. Obtain physical ShadeAuto hardware evidence
+before presenting the fixture-based checks as real-device qualification.

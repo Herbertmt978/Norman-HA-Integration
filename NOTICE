@@ -1,0 +1,10 @@
+The Gen 2 (ShadeAuto) implementation in custom_components/norman_gen1/gen2
+is derived from keito/home-assistant-norman, commit
+f280ea21c2d9717b5e044f6a81a7c67d147dc48d:
+https://github.com/keito/home-assistant-norman
+
+These derived files are licensed under Apache License 2.0, reproduced in
+licenses/keito-Apache-2.0.txt. They have been modified for combined-generation
+setup, Home Assistant compatibility, connection cleanup, response validation,
+notification parsing and control-state handling. The remainder of this project
+retains its existing MIT license unless otherwise stated.

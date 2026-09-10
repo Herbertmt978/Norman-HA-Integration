@@ -1030,7 +1030,7 @@ class TestConfigFlow(unittest.IsolatedAsyncioTestCase):
         flow = ConfigFlow()
         flow.hass = FakeHass()
 
-        result = await flow.async_step_user()
+        result = await flow.async_step_gen1()
         validated = result["data_schema"]({CONF_HOST: "192.0.2.10"})
 
         self.assertEqual(validated[CONF_PASSWORD], DEFAULT_PASSWORD)

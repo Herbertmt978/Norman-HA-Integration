@@ -1,12 +1,12 @@
 {
   "domain": "norman_gen1",
-  "name": "Norman Gen 1 Hub",
+  "name": "Norman",
   "codeowners": ["@Herbertmt978"],
   "config_flow": true,
-  "documentation": "https://github.com/Herbertmt978/Norman_Gen1_HA_Integration",
+  "documentation": "https://github.com/Herbertmt978/Norman-HA-Integration",
   "integration_type": "hub",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/Herbertmt978/Norman_Gen1_HA_Integration/issues",
+  "issue_tracker": "https://github.com/Herbertmt978/Norman-HA-Integration/issues",
   "requirements": [],
-  "version": "0.3.4"
+  "version": "0.4.0"
 }
