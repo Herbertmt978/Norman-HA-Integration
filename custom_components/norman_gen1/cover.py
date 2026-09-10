@@ -24,7 +24,7 @@ from .api import (
     resolve_position_profile,
     room_target_id,
 )
-from .const import CONF_SIMULTANEOUS_ROOMS, DOMAIN
+from .const import CONF_GENERATION, CONF_SIMULTANEOUS_ROOMS, DOMAIN, GEN1, GEN2
 from .coordinator import NormanConfigEntry, NormanDataUpdateCoordinator
 from .entity import NormanBaseCover
 from .helpers import clean_label, group_name
@@ -104,6 +104,11 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Norman room and group covers."""
+    if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
+        from .gen2 import cover as gen2_cover  # noqa: PLC0415
+
+        await gen2_cover.async_setup_entry(hass, entry, async_add_entities)
+        return
     coordinator = entry.runtime_data
     api = coordinator.api
     known_entities: set[tuple[str, int, int | None]] = set()

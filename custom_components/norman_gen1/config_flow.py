@@ -14,6 +14,7 @@ from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PASSWORD
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import selector
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import voluptuous as vol
 
 from .api import (
@@ -34,6 +35,7 @@ from .const import (
     CONF_CLOSE_POSITION,
     CONF_DEFAULT_CLOSE_POSITION,
     CONF_DEFAULT_OPEN_POSITION,
+    CONF_GENERATION,
     CONF_INHERIT,
     CONF_LEGACY_PROFILE_MIGRATION,
     CONF_OPEN_POSITION,
@@ -45,6 +47,8 @@ from .const import (
     DEFAULT_APP_VERSION,
     DEFAULT_PASSWORD,
     DOMAIN,
+    GEN1,
+    GEN2,
 )
 from .helpers import clean_label, group_name
 from .profiles import (
@@ -139,6 +143,95 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Choose the hub protocol before entering connection settings."""
+        if user_input is not None:
+            if user_input[CONF_GENERATION] == GEN2:
+                return await self.async_step_gen2()
+            return await self.async_step_gen1()
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_GENERATION, default=GEN1
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[GEN1, GEN2], translation_key="generation"
+                        )
+                    )
+                }
+            ),
+        )
+
+    async def async_step_gen2(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Validate a ShadeAuto hub without Gen 1 credentials or options."""
+        return await self._async_gen2_connection(user_input, reconfigure=False)
+
+    async def _async_gen2_connection(
+        self, user_input: dict[str, Any] | None, *, reconfigure: bool
+    ) -> ConfigFlowResult:
+        """Validate ShadeAuto identity and close the validation connection."""
+        from .gen2.api import (  # noqa: PLC0415 - Load ShadeAuto dependencies only for Gen 2.
+            NormanApiClient,
+            NormanApiError,
+            NormanConnectionError,
+        )
+
+        entry = (
+            self.hass.config_entries.async_get_entry(self.context.get("entry_id", ""))
+            if reconfigure
+            else None
+        )
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                host = _normalize_gen2_host(user_input[CONF_HOST])
+            except ValueError:
+                errors["base"] = "invalid_host"
+            else:
+                api = NormanApiClient(host, async_get_clientsession(self.hass))
+                try:
+                    await api.async_validate_connection()
+                    await api.async_get_devices()
+                    await api.async_get_status()
+                except NormanConnectionError:
+                    errors["base"] = "cannot_connect"
+                except NormanApiError:
+                    errors["base"] = "invalid_response"
+                finally:
+                    await api.async_close()
+                if not errors:
+                    unique_id = f"gen2_{api.thing_name}"
+                    data = {CONF_HOST: host, CONF_GENERATION: GEN2}
+                    if entry is not None:
+                        if entry.unique_id != unique_id:
+                            return self.async_abort(reason="wrong_hub")
+                        return self._update_entry_and_abort(
+                            entry, unique_id, data, "reconfigure_successful"
+                        )
+                    await self.async_set_unique_id(unique_id)
+                    self._abort_if_unique_id_configured()
+                    return self.async_create_entry(
+                        title=f"Norman ShadeAuto ({host})", data=data
+                    )
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_HOST, default=entry.data[CONF_HOST] if entry else vol.UNDEFINED
+                ): str
+            }
+        )
+        return self.async_show_form(
+            step_id="reconfigure" if reconfigure else "gen2",
+            data_schema=schema,
+            errors=errors,
+        )
+
+    async def async_step_gen1(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Validate a user-supplied local hub and create its config entry."""
         errors: dict[str, str] = {}
 
@@ -179,7 +272,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_APP_VERSION, default=DEFAULT_APP_VERSION): str,
             }
         )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="gen1", data_schema=schema, errors=errors)
 
     async def async_step_reauth(
         self, entry_data: Mapping[str, Any]
@@ -231,6 +324,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
         if entry is None:
             return self.async_abort(reason="reauth_entry_missing")
+
+        if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
+            return await self._async_gen2_connection(user_input, reconfigure=True)
 
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -324,6 +420,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> ConfigFlowResult:
         """Choose which movement-profile settings to edit."""
         entry = self._entry
+        if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
+            return self.async_abort(reason="no_gen2_options")
         if entry.version < 2 or any(
             key in entry.options
             for key in (
@@ -702,3 +800,11 @@ def _entry_transaction_lock(entry: config_entries.ConfigEntry) -> asyncio.Lock |
     if coordinator is None:
         return None
     return cast(asyncio.Lock, coordinator.api.transaction_lock)
+
+
+def _normalize_gen2_host(host: str) -> str:
+    """Normalize a ShadeAuto address without accepting an alternate port."""
+    host = _normalize_host(host)
+    if urlsplit(f"http://{host}").port is not None:
+        raise ValueError("ShadeAuto uses port 10123")
+    return host

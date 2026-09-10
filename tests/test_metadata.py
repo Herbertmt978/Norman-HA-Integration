@@ -36,12 +36,17 @@ def test_release_metadata_matches_supported_runtime() -> None:
     manifest = _json(INTEGRATION / "manifest.json")
     hacs = _json(ROOT / "hacs.json")
 
-    assert manifest["version"] == "0.3.4"
+    assert manifest["version"] == "0.4.0"
+    assert manifest["name"] == hacs["name"] == "Norman"
+    assert (
+        manifest["documentation"]
+        == "https://github.com/Herbertmt978/Norman-HA-Integration"
+    )
     assert manifest["domain"] == "norman_gen1"
     assert manifest["config_flow"] is True
     assert manifest["iot_class"] == "local_polling"
     assert hacs["homeassistant"] == "2024.11.0"
-    assert (ROOT / "docs" / "releases" / "v0.3.4.md").is_file()
+    assert (ROOT / "docs" / "releases" / "v0.4.0.md").is_file()
 
 
 def test_local_brand_assets_are_valid() -> None:
@@ -49,7 +54,7 @@ def test_local_brand_assets_are_valid() -> None:
     brand = INTEGRATION / "brand"
 
     assert _png_size(brand / "icon.png") == (256, 256)
-    assert _png_size(brand / "logo.png") == (600, 200)
+    assert _png_size(brand / "logo.png") == (256, 256)
 
 
 def test_english_translation_matches_source_strings() -> None:

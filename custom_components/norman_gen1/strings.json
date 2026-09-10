@@ -9,15 +9,44 @@
       "wrong_hub": "The address or credentials belong to a different Norman hub."
     },
     "error": {
-      "cannot_connect": "Could not connect to the Norman Gen 1 hub. Check the IP address and network access.",
+      "cannot_connect": "Could not connect to the Norman hub. Check the generation, IP address and network access.",
       "hub_needs_restart": "The hub's local control service is not responding. Restart the Norman hub, wait for its status light to settle, then try again.",
       "invalid_auth": "The hub rejected the password.",
       "invalid_host": "Enter only an IP address, hostname, or root HTTP URL without credentials, a path, query, or fragment.",
       "no_devices": "The hub responded, but no rooms or shutter devices were discovered.",
-      "unknown": "An unexpected error occurred."
+      "unknown": "An unexpected error occurred.",
+      "invalid_response": "The ShadeAuto hub returned an invalid response."
     },
     "step": {
       "user": {
+        "title": "Connect a Norman hub",
+        "description": "Choose your hub generation. Gen 2 uses the ShadeAuto app.",
+        "data": {
+          "generation": "Hub generation"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect to the Norman Gen 1 Hub",
+        "description": "Enter the local hub password. The factory password is pre-filled.",
+        "data": {
+          "password": "Password"
+        }
+      },
+      "reconfigure": {
+        "title": "Update Norman hub connection",
+        "description": "Update the connection to the same Norman hub.",
+        "data": {
+          "host": "Host",
+          "password": "Password",
+          "app_version": "App version"
+        },
+        "data_description": {
+          "host": "The hub IP address or local hostname.",
+          "password": "The factory password is pre-filled. Enter the configured password if it was changed.",
+          "app_version": "The Norman app version string sent to the hub."
+        }
+      },
+      "gen1": {
         "title": "Connect a Norman Gen 1 Hub",
         "description": "Connect to a Norman Gen 1 shutter hub over the local network.",
         "data": {
@@ -31,25 +60,11 @@
           "app_version": "The Norman app version string sent to the hub."
         }
       },
-      "reauth_confirm": {
-        "title": "Reconnect to the Norman Gen 1 Hub",
-        "description": "Enter the local hub password. The factory password is pre-filled.",
+      "gen2": {
+        "title": "Connect a Norman Gen 2 (ShadeAuto) hub",
+        "description": "Enter the local hub address. ShadeAuto uses port 10123 and does not require a Gen 1 password.",
         "data": {
-          "password": "Password"
-        }
-      },
-      "reconfigure": {
-        "title": "Update Norman Gen 1 Hub connection",
-        "description": "Change the hub address, password, or app version. The settings are accepted only if the same hub responds.",
-        "data": {
-          "host": "Host",
-          "password": "Password",
-          "app_version": "App version"
-        },
-        "data_description": {
-          "host": "The hub IP address or local hostname.",
-          "password": "The factory password is pre-filled. Enter the configured password if it was changed.",
-          "app_version": "The Norman app version string sent to the hub."
+          "host": "Host"
         }
       }
     }
@@ -59,7 +74,8 @@
       "migration_pending": "Set up the integration successfully once before changing these options so the existing movement directions can be migrated safely.",
       "no_rooms": "No rooms are currently available to configure.",
       "no_targets": "No rooms or panels are available to configure.",
-      "target_unavailable": "The selected room or panel is no longer available."
+      "target_unavailable": "The selected room or panel is no longer available.",
+      "no_gen2_options": "ShadeAuto has no additional options. Use Reconfigure to change its hub address."
     },
     "error": {
       "invalid_position": "Enter valid raw hub positions from 0 to 100.",
@@ -161,6 +177,14 @@
     },
     "wrong_hub": {
       "message": "The configured address now points to a different Norman hub."
+    }
+  },
+  "selector": {
+    "generation": {
+      "options": {
+        "gen1": "Gen 1",
+        "gen2": "Gen 2 (ShadeAuto)"
+      }
     }
   }
 }

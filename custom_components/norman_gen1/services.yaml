@@ -1,0 +1,36 @@
+nudge_position:
+  name: Nudge position
+  description: Move a Gen 2 (ShadeAuto) rail relative to its latest target or position.
+  target:
+    entity:
+      integration: norman_gen1
+      domain: cover
+      supported_features:
+        - cover.CoverEntityFeature.SET_TILT_POSITION
+  fields:
+    step:
+      required: true
+      selector:
+        number:
+          min: -100
+          max: 100
+          step: 1
+          mode: box
+nudge_tilt:
+  name: Nudge tilt
+  description: Move a Gen 2 (ShadeAuto) tilt or second rail relative to its latest target or position.
+  target:
+    entity:
+      integration: norman_gen1
+      domain: cover
+      supported_features:
+        - cover.CoverEntityFeature.SET_TILT_POSITION
+  fields:
+    step:
+      required: true
+      selector:
+        number:
+          min: -100
+          max: 100
+          step: 1
+          mode: box

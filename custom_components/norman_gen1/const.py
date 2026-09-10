@@ -32,3 +32,7 @@ CONF_LEGACY_PROFILE_MIGRATION = "legacy_profile_migration"
 CONF_TILT_OPEN_TARGETS = "tilt_open_targets"
 CONF_REVERSED_CLOSE_TARGETS = "reversed_close_targets"
 CONF_KNOWN_TARGETS = "known_targets"
+
+CONF_GENERATION = "generation"
+GEN1 = "gen1"
+GEN2 = "gen2"

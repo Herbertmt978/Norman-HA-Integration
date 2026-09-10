@@ -12,11 +12,14 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from .api import NormanGen1Api
 from .const import (
     CONF_APP_VERSION,
+    CONF_GENERATION,
     CONF_LEGACY_PROFILE_MIGRATION,
     CONF_REVERSED_CLOSE_TARGETS,
     CONF_TILT_OPEN_TARGETS,
     DEFAULT_APP_VERSION,
     DOMAIN,
+    GEN1,
+    GEN2,
     PLATFORMS,
 )
 from .coordinator import NormanConfigEntry, NormanDataUpdateCoordinator
@@ -29,6 +32,10 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: NormanConfigEntry) -> bool:
     """Set up a Norman Gen 1 hub from a config entry."""
+    if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
+        from . import gen2  # noqa: PLC0415
+
+        return await gen2.async_setup_entry(hass, entry)
     session = async_create_norman_session(hass)
     host = entry.data[CONF_HOST]
     expected_hub_id = entry.unique_id if entry.unique_id not in (None, host) else None
@@ -80,6 +87,10 @@ async def _async_update_options(hass: HomeAssistant, entry: NormanConfigEntry) -
 
 async def async_unload_entry(hass: HomeAssistant, entry: NormanConfigEntry) -> bool:
     """Unload a Norman Gen 1 config entry."""
+    if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
+        from . import gen2  # noqa: PLC0415
+
+        return await gen2.async_unload_entry(hass, entry)
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         coordinator = entry.runtime_data
