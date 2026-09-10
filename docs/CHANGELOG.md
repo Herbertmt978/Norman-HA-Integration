@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased: 0.4.0
+## 0.4.0 — 10 September 2026
 
 - Supports Gen 1 and Gen 2 (ShadeAuto) hubs in one integration, selected during setup.
 - Integrates the attributed ShadeAuto local API with current HA compatibility, response cleanup and safer two-rail controls.
