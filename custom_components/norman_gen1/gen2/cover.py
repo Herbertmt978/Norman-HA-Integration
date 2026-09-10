@@ -183,42 +183,14 @@ class NormanCoverBase(CoordinatorEntity[NormanCoordinator], CoverEntity):
         middle: int | None,
         action: str,
         value: int | None = None,
+        nudge: bool = False,
     ) -> None:
         """Set bottom and middle rail positions, preserving the other if None, with error handling."""
 
-        data = self.coordinator.data.get(self._device_id)
-        if data is None:
-            raise HomeAssistantError("ShadeAuto device is unavailable")
-        bottom_val = (
-            bottom
-            if bottom is not None
-            else (
-                data.target_bottom_rail_position
-                if data.target_bottom_rail_position is not None
-                else data.bottom_rail_position
-            )
-        )
-        middle_val = (
-            middle
-            if middle is not None
-            else (
-                data.target_middle_rail_position
-                if data.target_middle_rail_position is not None
-                else data.middle_rail_position
-            )
-        )
-        if bottom_val is None or middle_val is None:
-            raise HomeAssistantError(
-                "Cannot preserve an unknown rail position; refresh the hub first"
-            )
-
         try:
-            await self.coordinator.api.async_set_position(
-                self._device_id, bottom_val, middle_val
+            await self.coordinator.async_set_position(
+                self._device_id, bottom=bottom, middle=middle, nudge=nudge
             )
-            data.target_bottom_rail_position = bottom_val
-            data.target_middle_rail_position = middle_val
-            await self.coordinator.async_request_refresh()
         except (NormanApiError, NormanConnectionError) as err:
             raise HomeAssistantError(
                 f"Failed to {action} (value: {value}) for {self._attr_name}: {err}"
@@ -227,39 +199,16 @@ class NormanCoverBase(CoordinatorEntity[NormanCoordinator], CoverEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
-        data = self.coordinator.data.get(self._device_id)
-        self._attr_extra_state_attributes[ATTR_TARGET_POSITION] = getattr(
-            data, "target_bottom_rail_position", None
+        self._attr_extra_state_attributes[ATTR_TARGET_POSITION] = (
+            self.coordinator.target_position(self._device_id, "bottom")
         )
         return self._attr_extra_state_attributes
 
-    def _nudge_start(self, *, tilt: bool) -> int:
-        """Use the latest target or current position, never an invented position."""
-        data = self.coordinator.data.get(self._device_id)
-        if data is None:
-            raise HomeAssistantError("ShadeAuto device is unavailable")
-        target = (
-            data.target_middle_rail_position
-            if tilt
-            else data.target_bottom_rail_position
-        )
-        current = data.middle_rail_position if tilt else data.bottom_rail_position
-        value = target if target is not None else current
-        if value is None:
-            raise HomeAssistantError("ShadeAuto rail position is unknown")
-        return value
-
     async def async_nudge_position(self, step: int) -> None:
-        """Nudge the cover position by a specified step."""
-        # Positive step = more open, negative = more closed
-        new_pos = max(
-            0,
-            min(
-                100,
-                self._nudge_start(tilt=False) + step,
-            ),
+        """Nudge position relative to the latest accepted target."""
+        await self._async_set_position(
+            bottom=step, middle=None, action="nudge position", value=step, nudge=True
         )
-        await self.async_set_cover_position(position=new_pos)
 
 
 class NormanBlind(NormanCoverBase):
@@ -309,19 +258,13 @@ class NormanBlind(NormanCoverBase):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
         _ = super().extra_state_attributes
-        data = self.coordinator.data.get(self._device_id)
-        self._attr_extra_state_attributes[ATTR_TARGET_TILT] = getattr(
-            data, "target_middle_rail_position", None
+        self._attr_extra_state_attributes[ATTR_TARGET_TILT] = (
+            self.coordinator.target_position(self._device_id, "middle")
         )
         return self._attr_extra_state_attributes
 
     async def async_nudge_tilt(self, step: int) -> None:
-        """Nudge the cover tilt by a specified step."""
-        new_tilt = max(
-            0,
-            min(
-                100,
-                self._nudge_start(tilt=True) + step,
-            ),
+        """Nudge tilt relative to the latest accepted target."""
+        await self._async_set_position(
+            bottom=None, middle=step, action="nudge tilt", value=step, nudge=True
         )
-        await self.async_set_cover_tilt_position(tilt_position=new_tilt)

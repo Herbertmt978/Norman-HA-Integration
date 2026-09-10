@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from time import monotonic
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from custom_components.norman_gen1.const import DOMAIN
@@ -21,9 +23,12 @@ from .api import (
     NormanPeriodicReconnectError,
 )
 from .const import COVER_TYPE_SMARTDRAPE, RECONNECT_INTERVAL
-from .models import NormanDevices, NormanPeripheralData
+from .models import NormanDevices, NormanPeripheralData, validate_position
 
 _LOGGER = logging.getLogger(__name__)
+
+# Bound optimistic targets if the hub never acknowledges an accepted command.
+PENDING_TARGET_TIMEOUT = 30
 
 
 class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
@@ -42,6 +47,8 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
         )
         self.api = api
         self._device_info: dict[str, Any] = {}
+        self._command_lock = asyncio.Lock()
+        self._pending_targets: dict[tuple[int, str], tuple[int, float]] = {}
 
     async def listen_notifications(self) -> None:
         """Continuously listen for hub notifications and refresh data on change."""
@@ -86,19 +93,80 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
 
         """
         try:
-            # Only fetch full device info if we haven't yet or if it's empty
-            if not self._device_info:
-                self._device_info = await self.api.async_get_devices()
-
-            # Get status updates which are more lightweight
-            status_data = await self.api.async_get_status()
-
-            # Process and merge data from device info and status
-            return self._process_data(self._device_info, status_data)
+            async with self._command_lock:
+                if not self._device_info:
+                    self._device_info = await self.api.async_get_devices()
+                status_data = await self.api.async_get_status()
+                devices = self._process_data(self._device_info, status_data)
+                for key, (target, expires) in list(self._pending_targets.items()):
+                    device_id, rail = key
+                    data = devices.get(device_id)
+                    if (
+                        monotonic() >= expires
+                        or data is None
+                        or getattr(data, f"{rail}_rail_position") == target
+                        or getattr(data, f"target_{rail}_rail_position") == target
+                    ):
+                        del self._pending_targets[key]
+                return devices
         except NormanConnectionError as err:
             raise UpdateFailed(f"Error communicating with Norman hub: {err}") from err
         except (NormanApiError, TypeError, ValueError, AttributeError) as err:
             raise UpdateFailed(f"Invalid response from Norman hub: {err}") from err
+
+    def target_position(self, device_id: int, rail: str) -> int | None:
+        """Return an unacknowledged command target or the hub's reported target."""
+        pending = self._pending_targets.get((device_id, rail))
+        if pending is not None and monotonic() < pending[1]:
+            return pending[0]
+        return getattr(self.data.get(device_id), f"target_{rail}_rail_position", None)
+
+    async def async_set_position(
+        self,
+        device_id: int,
+        *,
+        bottom: int | None,
+        middle: int | None,
+        nudge: bool = False,
+    ) -> None:
+        """Resolve both rails atomically and retain accepted targets until acknowledged."""
+        async with self._command_lock:
+            data = self.data.get(device_id)
+            if not self.last_update_success or data is None:
+                raise HomeAssistantError("ShadeAuto device is unavailable")
+            positions: list[int] = []
+            for rail, requested in (("bottom", bottom), ("middle", middle)):
+                target = self.target_position(device_id, rail)
+                current = getattr(data, f"{rail}_rail_position")
+                position = target if target is not None else current
+                if requested is not None:
+                    if nudge:
+                        if position is None:
+                            raise HomeAssistantError(
+                                "ShadeAuto rail position is unknown"
+                            )
+                        position = max(0, min(100, position + requested))
+                    else:
+                        position = requested
+                if position is None:
+                    raise HomeAssistantError(
+                        "Cannot preserve an unknown rail position; refresh the hub first"
+                    )
+                try:
+                    validate_position(position)
+                except ValueError as err:
+                    raise HomeAssistantError(str(err)) from err
+                positions.append(position)
+            await self.api.async_set_position(device_id, *positions)
+            for rail, requested, position in zip(
+                ("bottom", "middle"), (bottom, middle), positions, strict=True
+            ):
+                if requested is not None:
+                    self._pending_targets[device_id, rail] = (
+                        position,
+                        monotonic() + PENDING_TARGET_TIMEOUT,
+                    )
+        await self.async_request_refresh()
 
     def _process_data(
         self, device_info: dict[str, Any], status_data: dict[str, Any]
@@ -179,13 +247,17 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
 
                 # Update with status information on dataclass
                 device = devices[peripheral_uid]
-                device.bottom_rail_position = peripheral.get("BottomRailPosition")
-                device.middle_rail_position = peripheral.get("MiddleRailPosition")
-                device.target_bottom_rail_position = peripheral.get(
-                    "TargetBottomRailPosition"
+                device.bottom_rail_position = validate_position(
+                    peripheral.get("BottomRailPosition")
                 )
-                device.target_middle_rail_position = peripheral.get(
-                    "TargetMiddleRailPosition"
+                device.middle_rail_position = validate_position(
+                    peripheral.get("MiddleRailPosition")
+                )
+                device.target_bottom_rail_position = validate_position(
+                    peripheral.get("TargetBottomRailPosition")
+                )
+                device.target_middle_rail_position = validate_position(
+                    peripheral.get("TargetMiddleRailPosition")
                 )
                 device.battery_level = peripheral.get("BatteryVoltage")
                 device.firmware_version = peripheral.get("FirmwareVersion")

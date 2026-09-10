@@ -26,7 +26,10 @@ beyond this upstream model require verified device data.
 Use the standard cover actions for opening, closing and setting the position or
 tilt. Controlling one rail preserves the latest known target of the other rail,
 or its reported position if no target is available. If the other rail is unknown,
-the command fails instead of guessing a position.
+the command fails instead of guessing a position. Accepted targets are retained
+for up to 30 seconds while the hub catches up, so consecutive commands and nudges
+preserve each other. Hub acknowledgement or timeout restores the reported target.
+Malformed rail values make the hub unavailable until a valid status refresh.
 
 ```yaml
 action: cover.set_cover_tilt_position

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 — 10 September 2026
+
+- Preserve accepted ShadeAuto rail targets across delayed status reads and serialize overlapping commands.
+- Handle notification connection timeouts as failures with the normal retry delay.
+- Reject invalid rail positions before they reach Home Assistant state or control requests.
+
 ## 0.4.0 â€” 10 September 2026
 
 - Supports Gen 1 and Gen 2 (ShadeAuto) hubs in one integration, selected during setup.

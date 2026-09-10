@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -31,3 +32,12 @@ class NormanPeripheralData:
 
 # Represents all peripherals keyed by their ID
 NormanDevices = dict[int, NormanPeripheralData]
+
+
+def validate_position(value: Any) -> int | None:
+    """Accept only known protocol percentages; missing rails remain unknown."""
+    if value is None:
+        return None
+    if type(value) is not int or not 0 <= value <= 100:
+        raise ValueError("ShadeAuto rail position must be an integer from 0 to 100")
+    return value

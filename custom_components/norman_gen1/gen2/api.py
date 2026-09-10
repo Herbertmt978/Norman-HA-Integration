@@ -244,31 +244,36 @@ class NormanApiClient:
         decoder = json.JSONDecoder()
         utf8 = codecs.getincrementaldecoder("utf-8")()
         buffer = ""
+        lifetime = asyncio.timeout(NOTIF_MAX_DURATION)
         try:
-            async with asyncio.timeout(NOTIF_MAX_DURATION):
-                async with self._session.post(
+            async with (
+                lifetime,
+                self._session.post(
                     f"{self.base_url}/NM/v1/notification",
                     timeout=ClientTimeout(total=None, connect=10),
-                ) as response:
-                    response.raise_for_status()
-                    self._notif_response = response
-                    while chunk := await response.content.read(READ_CHUNK_SIZE):
-                        buffer += utf8.decode(chunk)
-                        if len(buffer) > 1048576:
-                            raise NormanApiError("Notification exceeds maximum size")
-                        buffer = buffer.lstrip()
-                        while buffer:
-                            try:
-                                obj, end = decoder.raw_decode(buffer)
-                            except json.JSONDecodeError:
-                                break
-                            buffer = buffer[end:].lstrip()
-                            if isinstance(obj, dict) and "PeripheralList" in obj:
-                                yield obj
-                    if buffer.strip():
-                        raise NormanApiError("Incomplete notification response")
+                ) as response,
+            ):
+                response.raise_for_status()
+                self._notif_response = response
+                while chunk := await response.content.read(READ_CHUNK_SIZE):
+                    buffer += utf8.decode(chunk)
+                    if len(buffer) > 1048576:
+                        raise NormanApiError("Notification exceeds maximum size")
+                    buffer = buffer.lstrip()
+                    while buffer:
+                        try:
+                            obj, end = decoder.raw_decode(buffer)
+                        except json.JSONDecodeError:
+                            break
+                        buffer = buffer[end:].lstrip()
+                        if isinstance(obj, dict) and "PeripheralList" in obj:
+                            yield obj
+                if buffer.strip():
+                    raise NormanApiError("Incomplete notification response")
         except TimeoutError as err:
-            raise NormanPeriodicReconnectError from err
+            if lifetime.expired():
+                raise NormanPeriodicReconnectError from err
+            raise NormanConnectionError("Notification connection timed out") from err
         except (ClientError, UnicodeError) as err:
             raise NormanConnectionError("Notification connection failed") from err
         finally:

@@ -130,7 +130,7 @@ async def test_generation_choice_and_gen2_setup(hass, shadeauto):
         {"entity_id": entity_id, "step": 10},
         blocking=True,
     )
-    shadeauto.async_set_position.assert_awaited_with(7, 35, 75)
+    shadeauto.async_set_position.assert_awaited_with(7, 45, 75)
     options = await hass.config_entries.options.async_init(configured.entry_id)
     assert options["reason"] == "no_gen2_options"
 
@@ -545,4 +545,129 @@ async def test_notification_rotation_and_connection_failure():
     response.close.assert_called_once()
     context.__aenter__.side_effect = aiohttp.ClientConnectionError()
     with pytest.raises(NormanConnectionError):
+        _ = [item async for item in api.async_listen_notifications()]
+
+
+async def test_delayed_status_preserves_commands_and_nudges(hass, shadeauto):
+    """Stale reads cannot undo a just-accepted rail target or repeated nudge."""
+    coordinator = NormanCoordinator(hass, shadeauto, entry(hass))
+    await coordinator.async_refresh()
+    await coordinator.async_set_position(7, bottom=45, middle=None)
+    await coordinator.async_set_position(7, bottom=None, middle=75)
+    await coordinator.async_set_position(7, bottom=5, middle=None, nudge=True)
+    assert [call.args for call in shadeauto.async_set_position.await_args_list] == [
+        (7, 45, 65),
+        (7, 45, 75),
+        (7, 50, 75),
+    ]
+    # Current position stays physical; only the command target is optimistic.
+    assert coordinator.data[7].bottom_rail_position == 35
+    assert coordinator.target_position(7, "bottom") == 50
+    await coordinator.async_shutdown()
+
+
+@pytest.mark.parametrize("acknowledgement", ["current", "target", "expiry"])
+async def test_pending_target_relinquishes_to_hub(hass, shadeauto, acknowledgement):
+    """Acknowledgement or a bounded timeout restores hub ownership of targets."""
+    coordinator = NormanCoordinator(hass, shadeauto, entry(hass))
+    await coordinator.async_refresh()
+    with patch(
+        "custom_components.norman_gen1.gen2.coordinator.monotonic", return_value=10
+    ):
+        await coordinator.async_set_position(7, bottom=45, middle=None)
+    if acknowledgement != "expiry":
+        field = (
+            "BottomRailPosition"
+            if acknowledgement == "current"
+            else "TargetBottomRailPosition"
+        )
+        shadeauto.async_get_status.return_value["Peripherals"][0][field] = 45
+        with patch(
+            "custom_components.norman_gen1.gen2.coordinator.monotonic", return_value=11
+        ):
+            await coordinator.async_refresh()
+        # A later app command is authoritative once our command is acknowledged.
+        shadeauto.async_get_status.return_value["Peripherals"][0].update(
+            BottomRailPosition=20, TargetBottomRailPosition=25
+        )
+    with patch(
+        "custom_components.norman_gen1.gen2.coordinator.monotonic",
+        return_value=41 if acknowledgement == "expiry" else 12,
+    ):
+        await coordinator.async_refresh()
+        await coordinator.async_set_position(7, bottom=None, middle=75)
+    expected = 35 if acknowledgement == "expiry" else 25
+    shadeauto.async_set_position.assert_awaited_with(7, expected, 75)
+    await coordinator.async_shutdown()
+
+
+async def test_failed_command_does_not_replace_pending_target(hass, shadeauto):
+    """A rejected command leaves the last accepted target intact."""
+    coordinator = NormanCoordinator(hass, shadeauto, entry(hass))
+    await coordinator.async_refresh()
+    await coordinator.async_set_position(7, bottom=45, middle=None)
+    shadeauto.async_set_position.side_effect = NormanConnectionError()
+    with pytest.raises(NormanConnectionError):
+        await coordinator.async_set_position(7, bottom=90, middle=None)
+    assert coordinator.target_position(7, "bottom") == 45
+    await coordinator.async_shutdown()
+
+
+async def test_concurrent_commands_are_serialized(hass, shadeauto):
+    """A second command resolves its preserved rail after the first is accepted."""
+    coordinator = NormanCoordinator(hass, shadeauto, entry(hass))
+    await coordinator.async_refresh()
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def control(*args):
+        started.set()
+        await release.wait()
+
+    shadeauto.async_set_position.side_effect = control
+    first = asyncio.create_task(
+        coordinator.async_set_position(7, bottom=45, middle=None)
+    )
+    await started.wait()
+    second = asyncio.create_task(
+        coordinator.async_set_position(7, bottom=None, middle=75)
+    )
+    release.set()
+    await asyncio.gather(first, second)
+    assert [call.args for call in shadeauto.async_set_position.await_args_list] == [
+        (7, 45, 65),
+        (7, 45, 75),
+    ]
+    await coordinator.async_shutdown()
+
+
+@pytest.mark.parametrize("value", ["35", True, 35.5, -1, 101, [], {}])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "BottomRailPosition",
+        "MiddleRailPosition",
+        "TargetBottomRailPosition",
+        "TargetMiddleRailPosition",
+    ],
+)
+async def test_invalid_rail_status_blocks_controls(hass, shadeauto, field, value):
+    """Every rail field is validated before entering entity state or a control request."""
+    coordinator = NormanCoordinator(hass, shadeauto, entry(hass))
+    await coordinator.async_refresh()
+    shadeauto.async_get_status.return_value["Peripherals"][0][field] = value
+    await coordinator.async_refresh()
+    assert not coordinator.last_update_success
+    with pytest.raises(HomeAssistantError, match="unavailable"):
+        await coordinator.async_set_position(7, bottom=None, middle=75)
+    shadeauto.async_set_position.assert_not_called()
+    await coordinator.async_shutdown()
+
+
+@pytest.mark.parametrize("failure", [TimeoutError(), aiohttp.ServerTimeoutError()])
+async def test_notification_transport_timeout_is_not_rotation(failure):
+    """Connection timeouts take the delayed reconnect path, not periodic rotation."""
+    session, context, _ = response_session({})
+    context.__aenter__.side_effect = failure
+    api = NormanApiClient("host", session)
+    with pytest.raises(NormanConnectionError, match="timed out"):
         _ = [item async for item in api.async_listen_notifications()]
