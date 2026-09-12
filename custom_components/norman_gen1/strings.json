@@ -24,6 +24,8 @@
       "unknown": "An unexpected error occurred.",
       "invalid_response": "The ShadeAuto hub returned an invalid response.",
       "rf_learning_unavailable": "The learning action failed. Check the bridge connection and firmware, then retry.",
+      "rf_relay_enable_failed": "The profile was saved, but repeating could not be enabled. Reconnect the bridge and retry, or leave the box unchecked to continue without changing its relay setting.",
+      "rf_profile_refresh_failed": "The profile change was saved on the bridge, but HA could not refresh its controls. Reconnect the bridge and submit again. This retries only the refresh, not the saved change.",
       "rf_learn_invalid_name": "Use 1–47 printable English letters, numbers or punctuation for each name.",
       "rf_learn_mixed_actions": "More than one action or panel was heard. Choose Retry and use only the requested action.",
       "rf_learn_need_two_presses": "Choose Retry, then press the action twice, at least eight seconds apart.",
@@ -143,6 +145,17 @@
           "confirmed": "I confirmed the correct physical action and target",
           "enable_relay": "Enable autonomous repeating for learned actions"
         }
+      },
+      "rf_enable_relay": {
+        "title": "Profile saved: enable repeating",
+        "description": "Your profile is already saved. This step only enables autonomous repeating; it does not save the profile again. Leave unchecked to continue and manage repeating later from the ESPHome device.",
+        "data": {
+          "enable_relay": "Enable autonomous repeating for learned actions"
+        }
+      },
+      "rf_profile_refresh": {
+        "title": "Profile updated: refresh HA controls",
+        "description": "The bridge has confirmed the profile change. Submit to refresh the bound panel and room controls in HA without changing the saved profile again. Keep this flow open until the bridge reconnects."
       },
       "rf_profile": {
         "title": "Choose a saved profile",

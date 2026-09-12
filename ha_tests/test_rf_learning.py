@@ -28,6 +28,8 @@ def learning_bridge(hass):
     }
 
     async def status(call):
+        if isinstance(state["faults"].get("status"), Exception):
+            raise state["faults"]["status"]
         if state["faults"].get("status"):
             raise HomeAssistantError("offline")
         return deepcopy(state["status"])
@@ -37,6 +39,8 @@ def learning_bridge(hass):
 
     async def relay(call):
         state["relay"].append(call.data["enabled"])
+        if state["faults"].get("relay"):
+            raise state["faults"]["relay"]
 
     async def learn(call):
         request = json.loads(call.data["request_json"])
@@ -101,6 +105,8 @@ def learning_bridge(hass):
                 rows.remove(target)
             else:
                 target.update(name=request["name"], room=request["room"])
+            if state.get("after_mutation_fault"):
+                state["faults"]["status"] = state["after_mutation_fault"]
         return result
 
     hass.services.async_register(
@@ -215,6 +221,76 @@ async def test_relay_only_learning_and_finish(hass, learning_bridge):
         == []
     )
     assert learning_bridge["relay"] == []
+
+
+@pytest.mark.parametrize("error", [HomeAssistantError, TimeoutError])
+@pytest.mark.parametrize("retry", [False, True])
+async def test_saved_profile_retries_only_relay_setting(
+    hass, learning_bridge, error, retry
+):
+    """A relay failure never sends a second commit for an already saved profile."""
+    flow = await choose(hass, await manage(hass), "rf_learn_relay")
+    flow = await submit(hass, flow, {"name": "Office Open"})
+    flow = await submit(hass, flow, {"next_action": "continue"})
+    learning_bridge["faults"]["relay"] = error("offline")
+    flow = await submit(hass, flow, {"confirmed": True, "enable_relay": True})
+    assert flow["step_id"] == "rf_enable_relay"
+    assert flow["errors"] == {"base": "rf_relay_enable_failed"}
+    assert len(learning_bridge["relay_profiles"]) == 1
+    # Repeated follow-up failure must still leave the saved profile alone.
+    flow = await submit(hass, flow, {"enable_relay": True})
+    assert flow["step_id"] == "rf_enable_relay"
+    learning_bridge["faults"].clear()
+    flow = await submit(hass, flow, {"enable_relay": retry})
+    assert flow["step_id"] == "rf_manage"
+    assert len(learning_bridge["relay"]) == (3 if retry else 2)
+    assert [c["operation"] for c in learning_bridge["calls"]].count("commit") == 1
+    assert not any(c["operation"] == "transmit" for c in learning_bridge["calls"])
+
+
+@pytest.mark.parametrize("error", [HomeAssistantError, TimeoutError])
+@pytest.mark.parametrize("operation", ["remove", "rename"])
+async def test_saved_profile_change_retries_only_binding_refresh(
+    hass, learning_bridge, error, operation
+):
+    """An acknowledged change survives repeated status failures without re-mutation."""
+    learning_bridge["status"]["targets"] = deepcopy(TARGETS)
+    entry = saved_entry(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    flow = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "reconfigure", "entry_id": entry.entry_id}
+    )
+    flow = await submit(hass, flow, {"bridge": PREFIX})
+    flow = await choose(hass, flow, "rf_profile")
+    flow = await submit(hass, flow, {"profile": "panel:2"})
+    learning_bridge["after_mutation_fault"] = error("offline")
+    flow = await submit(
+        hass,
+        flow,
+        {"operation": operation, "name": "Top left", "room": "Bedroom"},
+    )
+    if operation == "remove":
+        flow = await submit(hass, flow, {"confirmed": True})
+    assert flow["step_id"] == "rf_profile_refresh"
+    assert flow["errors"] == {"base": "rf_profile_refresh_failed"}
+    flow = await submit(hass, flow, {})
+    assert flow["step_id"] == "rf_profile_refresh"
+    learning_bridge["faults"].clear()
+    flow = await submit(hass, flow, {})
+    assert flow["step_id"] == "rf_manage"
+    await hass.async_block_till_done()
+    assert entry.data["targets"][:2] == TARGETS[:2]
+    assert len(entry.data["targets"]) == (2 if operation == "remove" else 3)
+    if operation == "rename":
+        assert entry.data["targets"][2]["name"] == "Top left"
+        assert entry.data["targets"][2]["room"] == "Bedroom"
+        assert entry.data["targets"][2]["profile_id"] == TARGETS[2]["profile_id"]
+    assert len(
+        er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)
+    ) == (3 if operation == "remove" else 4)
+    assert [c["operation"] for c in learning_bridge["calls"]].count(operation) == 1
+    assert not any(c["operation"] == "transmit" for c in learning_bridge["calls"])
 
 
 @pytest.mark.parametrize("confirmed", [False, True])

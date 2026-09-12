@@ -286,16 +286,12 @@ class RFLearningFlow(config_entries.ConfigFlow):
                 )
             try:
                 await self._learning_call("commit", **data)
-                if user_input["enable_relay"]:
-                    await self.hass.services.async_call(
-                        "esphome",
-                        f"{self._rf_bridge}_rf_set_relay",
-                        {"enabled": True},
-                        blocking=True,
-                    )
-                return await self.async_step_rf_manage()
             except (HomeAssistantError, TimeoutError) as err:
                 errors["base"] = self._learning_error(err)
+            else:
+                return await self.async_step_rf_enable_relay(
+                    {"enable_relay": user_input["enable_relay"]}
+                )
         return self.async_show_form(
             step_id="rf_learn_confirm",
             data_schema=vol.Schema(
@@ -306,6 +302,32 @@ class RFLearningFlow(config_entries.ConfigFlow):
             ),
             errors=errors,
             description_placeholders={"name": self._learning_details["name"]},
+        )
+
+    async def async_step_rf_enable_relay(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Retry only the optional relay setting after a confirmed profile save."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            if not user_input["enable_relay"]:
+                return await self.async_step_rf_manage()
+            try:
+                async with asyncio.timeout(12):
+                    await self.hass.services.async_call(
+                        "esphome",
+                        f"{self._rf_bridge}_rf_set_relay",
+                        {"enabled": True},
+                        blocking=True,
+                    )
+            except (HomeAssistantError, TimeoutError):
+                errors["base"] = "rf_relay_enable_failed"
+            else:
+                return await self.async_step_rf_manage()
+        return self.async_show_form(
+            step_id="rf_enable_relay",
+            data_schema=vol.Schema({vol.Required("enable_relay", default=True): bool}),
+            errors=errors,
         )
 
     async def async_step_rf_finish_relay(
@@ -411,10 +433,10 @@ class RFLearningFlow(config_entries.ConfigFlow):
                         name=user_input["name"].strip(),
                         room=user_input.get("room", "").strip(),
                     )
-                    await self._refresh_managed_bindings()
-                    return await self.async_step_rf_manage()
                 except (HomeAssistantError, TimeoutError) as err:
                     errors["base"] = self._learning_error(err)
+                else:
+                    return await self.async_step_rf_profile_refresh()
         fields: dict[Any, Any] = {
             vol.Required("operation", default="rename"): selector.SelectSelector(
                 selector.SelectSelectorConfig(
@@ -446,16 +468,30 @@ class RFLearningFlow(config_entries.ConfigFlow):
                     profile_id=profile["profile_id"],
                     confirmed=True,
                 )
-                await self._refresh_managed_bindings()
-                return await self.async_step_rf_manage()
             except (HomeAssistantError, TimeoutError) as err:
                 errors["base"] = self._learning_error(err)
+            else:
+                return await self.async_step_rf_profile_refresh()
         return self.async_show_form(
             step_id="rf_profile_remove",
             data_schema=vol.Schema({vol.Required("confirmed", default=False): bool}),
             errors=errors,
             description_placeholders={"name": self._selected_profile["name"]},
         )
+
+    async def async_step_rf_profile_refresh(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Retry reconciliation without repeating an acknowledged profile mutation."""
+        try:
+            await self._refresh_managed_bindings()
+        except (HomeAssistantError, TimeoutError):
+            return self.async_show_form(
+                step_id="rf_profile_refresh",
+                data_schema=vol.Schema({}),
+                errors={"base": "rf_profile_refresh_failed"},
+            )
+        return await self.async_step_rf_manage()
 
     async def _refresh_managed_bindings(self) -> None:
         """Refresh existing bindings after an explicit edit; new panels stay opt-in."""
