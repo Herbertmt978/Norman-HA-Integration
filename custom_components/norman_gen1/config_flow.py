@@ -13,6 +13,7 @@ from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PASSWORD
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import voluptuous as vol
@@ -58,6 +59,8 @@ from .profiles import (
     resolve_default_profile,
     stored_position_profiles,
 )
+from .rf import RFStatus
+from .rf_learning import RFLearningFlow, supports_learning
 from .session import async_create_norman_session
 
 _LOGGER = logging.getLogger(__name__)
@@ -127,10 +130,12 @@ async def _fetch_validation_snapshot(
     return info, rooms, windows
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class ConfigFlow(RFLearningFlow, domain=DOMAIN):
     """Handle a config flow for Norman Gen 1 Hub."""
 
     VERSION = 2
+    _rf_bridge: str = ""
+    _rf_status: RFStatus | None = None
 
     @staticmethod
     @callback
@@ -145,6 +150,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Choose the hub protocol before entering connection settings."""
         if user_input is not None:
+            if user_input[CONF_GENERATION] == "esphome_rf":
+                return await self.async_step_rf()
             if user_input[CONF_GENERATION] == GEN2:
                 return await self.async_step_gen2()
             return await self.async_step_gen1()
@@ -156,11 +163,140 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_GENERATION, default=GEN1
                     ): selector.SelectSelector(
                         selector.SelectSelectorConfig(
-                            options=[GEN1, GEN2], translation_key="generation"
+                            options=[GEN1, GEN2, "esphome_rf"],
+                            translation_key="generation",
                         )
                     )
                 }
             ),
+        )
+
+    async def async_step_rf(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Choose the transmitting bridge without hub credentials."""
+        from .rf import CONF_BRIDGE, bridge_choices, read_status  # noqa: PLC0415
+
+        choices = bridge_choices(self.hass)
+        if not choices:
+            return self.async_abort(reason="no_rf_bridge")
+        entry = (
+            self.hass.config_entries.async_get_entry(self.context.get("entry_id", ""))
+            if self.context.get("source") == "reconfigure"
+            else None
+        )
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            prefix = user_input[CONF_BRIDGE]
+            if entry is not None and prefix != entry.data[CONF_BRIDGE]:
+                errors["base"] = "rf_wrong_bridge"
+            else:
+                try:
+                    status = await read_status(self.hass, prefix)
+                except (HomeAssistantError, TimeoutError):
+                    errors["base"] = "rf_unavailable"
+                else:
+                    if not status.ready or (
+                        not status.targets and not supports_learning(self.hass, prefix)
+                    ):
+                        errors["base"] = "rf_not_learned"
+                    else:
+                        if entry is None:
+                            await self.async_set_unique_id(f"rf_{prefix}")
+                            self._abort_if_unique_id_configured()
+                        self._rf_bridge, self._rf_status = prefix, status
+                        if supports_learning(self.hass, prefix):
+                            return await self.async_step_rf_manage()
+                        return await self.async_step_rf_rooms()
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_BRIDGE,
+                    default=entry.data[CONF_BRIDGE]
+                    if entry is not None
+                    else next(iter(choices)),
+                ): vol.In(choices),
+            }
+        )
+        return self.async_show_form(step_id="rf", data_schema=schema, errors=errors)
+
+    async def async_step_rf_rooms(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Select complete rooms, preserving one direct transmitter per profile."""
+        from .rf import (  # noqa: PLC0415
+            CONF_BRIDGE,
+            CONF_TARGETS,
+            RF,
+            binding_data,
+            claimed_profiles,
+            parse_targets,
+            read_status,
+        )
+
+        if self._rf_status is None:
+            return await self.async_step_rf()
+        entry = (
+            self.hass.config_entries.async_get_entry(self.context.get("entry_id", ""))
+            if self.context.get("source") == "reconfigure"
+            else None
+        )
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                current = await read_status(self.hass, self._rf_bridge)
+            except (HomeAssistantError, TimeoutError):
+                errors["base"] = "rf_unavailable"
+            else:
+                if not current.ready:
+                    errors["base"] = "rf_unavailable"
+                elif current.targets != self._rf_status.targets:
+                    self._rf_status = current
+                    errors["base"] = "rf_inventory_changed"
+                else:
+                    try:
+                        bindings = binding_data(current, user_input["rooms"])
+                        claimed = claimed_profiles(
+                            self.hass, entry.entry_id if entry else ""
+                        )
+                    except HomeAssistantError:
+                        errors["base"] = "rf_invalid_rooms"
+                    else:
+                        if any(target["profile_id"] in claimed for target in bindings):
+                            errors["base"] = "rf_room_claimed"
+                        else:
+                            data = {
+                                CONF_GENERATION: RF,
+                                CONF_BRIDGE: self._rf_bridge,
+                                CONF_TARGETS: bindings,
+                            }
+                            if entry is not None:
+                                return self.async_update_reload_and_abort(
+                                    entry, data=data
+                                )
+                            return self.async_create_entry(
+                                title=f"Norman RF {self._rf_bridge.replace('_', ' ')}",
+                                data=data,
+                            )
+        rooms = sorted({target.room for target in self._rf_status.targets})
+        defaults = (
+            sorted(
+                {target.room for target in parse_targets(entry.data[CONF_TARGETS])}
+                & set(rooms)
+            )
+            if entry is not None
+            else []
+        )
+        return self.async_show_form(
+            step_id="rf_rooms",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("rooms", default=defaults): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=rooms, multiple=True)
+                    ),
+                }
+            ),
+            errors=errors,
         )
 
     async def async_step_gen2(
@@ -325,6 +461,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if entry is None:
             return self.async_abort(reason="reauth_entry_missing")
 
+        if entry.data.get(CONF_GENERATION) == "esphome_rf":
+            return await self.async_step_rf(user_input)
         if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
             return await self._async_gen2_connection(user_input, reconfigure=True)
 
@@ -420,6 +558,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> ConfigFlowResult:
         """Choose which movement-profile settings to edit."""
         entry = self._entry
+        if entry.data.get(CONF_GENERATION) == "esphome_rf":
+            return self.async_abort(reason="rf_use_reconfigure")
         if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
             return self.async_abort(reason="no_gen2_options")
         if entry.version < 2 or any(

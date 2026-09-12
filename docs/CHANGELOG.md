@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0b1 — ESPHome RF bridge candidate
+
+- Add a separate commissioned ESPHome RF bridge entry without hub credentials,
+  RF packet generation in HA, automatic retry or hub fallback.
+- Discover up to32 learned section targets and their room covers using native
+  protocol3. Interleave up to8 targets in one room batch through the single radio,
+  preserve uncertainty on failure and never automatically retry a send.
+- Offer learned open and per-target preferred close endpoints; retain unknown
+  startup state and explicitly assumed command state, without a position slider.
+- Validate each target's slot, fingerprint, room and endpoints before commands.
+- Select complete rooms per transmitting bridge; reject duplicate profile
+  ownership, changed inventories and rooms beyond the eight-section batch limit.
+- Keep existing Gen1/Gen2 entries and ESPHome's independent relay/Bluetooth features unchanged.
+
 ## 0.4.1 — 10 September 2026
 
 - Preserve accepted ShadeAuto rail targets across delayed status reads and serialize overlapping commands.

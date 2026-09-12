@@ -1,6 +1,7 @@
 {
   "config": {
     "abort": {
+      "no_rf_bridge": "No compatible bridge was found. Install the firmware and add it to the ESPHome integration first.",
       "already_configured": "This hub is already configured.",
       "hub_identity_unavailable": "Home Assistant cannot verify that the new address is the same hub. Remove and add the integration again, or reconnect the old address first so its hub ID can be learned.",
       "reauth_entry_missing": "The config entry is no longer available.",
@@ -9,18 +10,53 @@
       "wrong_hub": "The address or credentials belong to a different Norman hub."
     },
     "error": {
+      "rf_wrong_bridge": "Choose the existing bridge. Add a separate entry for another bridge.",
+      "rf_unavailable": "The ESPHome RF bridge is unavailable or its firmware does not support acknowledged RF actions.",
+      "rf_not_learned": "Commission at least one panel section and its preferred closing direction first.",
+      "rf_invalid_rooms": "Choose one or more complete learned rooms, each with at most eight sections. Check existing RF bindings if their inventory is invalid.",
+      "rf_inventory_changed": "The bridge inventory changed. Review the rooms and submit again to confirm the new commissioning.",
+      "rf_room_claimed": "A selected section already has a direct transmitter in another Norman RF entry. Deselect that room there before assigning it here.",
       "cannot_connect": "Could not connect to the Norman hub. Check the generation, IP address and network access.",
       "hub_needs_restart": "The hub's local control service is not responding. Restart the Norman hub, wait for its status light to settle, then try again.",
       "invalid_auth": "The hub rejected the password.",
       "invalid_host": "Enter only an IP address, hostname, or root HTTP URL without credentials, a path, query, or fragment.",
       "no_devices": "The hub responded, but no rooms or shutter devices were discovered.",
       "unknown": "An unexpected error occurred.",
-      "invalid_response": "The ShadeAuto hub returned an invalid response."
+      "invalid_response": "The ShadeAuto hub returned an invalid response.",
+      "rf_learning_unavailable": "The learning action failed. Check the bridge connection and firmware, then retry.",
+      "rf_relay_enable_failed": "The profile was saved, but repeating could not be enabled. Reconnect the bridge and retry, or leave the box unchecked to continue without changing its relay setting.",
+      "rf_profile_refresh_failed": "The profile change was saved on the bridge, but HA could not refresh its controls. Reconnect the bridge and submit again. This retries only the refresh, not the saved change.",
+      "rf_learn_invalid_name": "Use 1–47 printable English letters, numbers or punctuation for each name.",
+      "rf_learn_mixed_actions": "More than one action or panel was heard. Choose Retry and use only the requested action.",
+      "rf_learn_need_two_presses": "Choose Retry, then press the action twice, at least eight seconds apart.",
+      "rf_learn_wrong_endpoint": "These are not one panel's Open/Close actions. Cancel and learn one section using one controller.",
+      "rf_learn_capture_expired": "The one-minute capture expired. Choose Retry before pressing again.",
+      "rf_learn_expired": "The ten-minute session expired. Cancel and start again.",
+      "rf_learn_learning_busy": "Another learning session owns this bridge. Finish it or wait up to ten minutes.",
+      "rf_learn_session_mismatch": "The learning session was lost. Cancel and start again.",
+      "rf_learn_radio_unavailable": "The radio is busy, unavailable or faulted. Check its diagnostics.",
+      "rf_learn_already_learned": "This profile is already saved. Cancel and select its existing room; it was not overwritten.",
+      "rf_learn_storage_full": "All profile slots are occupied. Remove an unwanted profile first.",
+      "rf_learn_storage_or_profile_error": "Saving failed. Check the bridge diagnostics; do not assume it was commissioned."
     },
     "step": {
+      "rf": {
+        "title": "Connect an ESPHome RF bridge (experimental)",
+        "description": "Choose the ESPHome bridge that will transmit directly to the selected rooms. No Norman hub is called. Position is assumed, not measured.",
+        "data": {
+          "bridge": "ESPHome RF bridge"
+        }
+      },
+      "rf_rooms": {
+        "title": "Rooms controlled by this ESP bridge",
+        "description": "Select rooms within this bridge's tested range. Each learned section may have only one direct-command bridge in this integration. Other ESP bridges can still repeat its signals. Each room uses an interleaved batch, not a native room broadcast.",
+        "data": {
+          "rooms": "Rooms"
+        }
+      },
       "user": {
-        "title": "Connect a Norman hub",
-        "description": "Choose your hub generation. Gen 2 uses the ShadeAuto app.",
+        "title": "Connect Norman controls",
+        "description": "Choose a hub generation or an adopted ESPHome RF bridge. Compatible bridges can learn your sections during setup.",
         "data": {
           "generation": "Hub generation"
         }
@@ -66,11 +102,89 @@
         "data": {
           "host": "Host"
         }
+      },
+      "rf_manage": {
+        "title": "Manage Norman RF profiles",
+        "description": "Learn one motorised section at a time, or learn a forwarding-only action. Finish by selecting rooms for direct HA control.",
+        "menu_options": {
+          "rf_learn_panel": "Add a motorised section",
+          "rf_learn_relay": "Add an action for repeating",
+          "rf_rooms": "Finish: select rooms for HA",
+          "rf_finish_relay": "Finish without direct controls",
+          "rf_profile": "Rename, regroup or remove a saved profile"
+        }
+      },
+      "rf_learn_panel": {
+        "title": "Name this motorised section",
+        "description": "Use an individual section, not a whole-room action. Keep one original controller ready and pause nearby schedules. Learning pauses this bridge's transmissions for up to ten minutes.",
+        "data": {
+          "name": "Section name",
+          "room": "Room",
+          "close_direction": "Preferred closing direction",
+          "learn_opposite": "Learn the other closing direction too"
+        }
+      },
+      "rf_learn_relay": {
+        "title": "Add an action for repeating",
+        "description": "Name one action, such as Office Open. Learn Close separately. This grants forwarding only, not direct HA control.",
+        "data": {
+          "name": "Action name"
+        }
+      },
+      "rf_capture": {
+        "title": "Capture: {action}",
+        "description": "Listening for {name}: {action}. Press this action TWICE on the same controller, at least eight seconds apart. Confirm the intended movement, then Continue within one minute. Do not use other panels or actions. Retry starts a new window; Cancel discards unsaved captures.",
+        "data": {
+          "next_action": "Next"
+        }
+      },
+      "rf_learn_confirm": {
+        "title": "Save {name}",
+        "description": "Confirm that the controller performed the requested actions on the intended section (or the named relay action). Saving does not transmit. After finishing setup, test HA Open/Close while watching the shutters. Unchecked confirmation discards the capture.",
+        "data": {
+          "confirmed": "I confirmed the correct physical action and target",
+          "enable_relay": "Enable autonomous repeating for learned actions"
+        }
+      },
+      "rf_enable_relay": {
+        "title": "Profile saved: enable repeating",
+        "description": "Your profile is already saved. This step only enables autonomous repeating; it does not save the profile again. Leave unchecked to continue and manage repeating later from the ESPHome device.",
+        "data": {
+          "enable_relay": "Enable autonomous repeating for learned actions"
+        }
+      },
+      "rf_profile_refresh": {
+        "title": "Profile updated: refresh HA controls",
+        "description": "The bridge has confirmed the profile change. Submit to refresh the bound panel and room controls in HA without changing the saved profile again. Keep this flow open until the bridge reconnects."
+      },
+      "rf_profile": {
+        "title": "Choose a saved profile",
+        "description": "Panel profiles provide direct HA controls and may be repeated. Relay actions only authorize forwarding. Select the exact saved profile to manage.",
+        "data": {
+          "profile": "Saved profile"
+        }
+      },
+      "rf_profile_edit": {
+        "title": "Edit saved profile",
+        "description": "Renaming or regrouping preserves RF commands and rolling state. Removing needs confirmation on the next screen. A room supports up to eight sections.",
+        "data": {
+          "operation": "Change",
+          "name": "Name",
+          "room": "Room"
+        }
+      },
+      "rf_profile_remove": {
+        "title": "Remove {name}?",
+        "description": "Remove this profile from this ESP bridge and remove its bound HA panel control. A room disappears if its last bound section is removed. Automations referencing removed controls need updating. Other panels, other ESP bridges and the original Norman controller are untouched. Recovery requires learning the profile again. Leave unchecked to keep it.",
+        "data": {
+          "confirmed": "Remove this saved profile"
+        }
       }
     }
   },
   "options": {
     "abort": {
+      "rf_use_reconfigure": "Use Reconfigure to add, rename, regroup or remove RF profiles and select rooms. Autonomous relay settings are on the ESPHome device.",
       "migration_pending": "Set up the integration successfully once before changing these options so the existing movement directions can be migrated safely.",
       "no_rooms": "No rooms are currently available to configure.",
       "no_targets": "No rooms or panels are available to configure.",
@@ -183,7 +297,27 @@
     "generation": {
       "options": {
         "gen1": "Gen 1",
+        "esphome_rf": "ESPHome RF bridge (experimental)",
         "gen2": "Gen 2 (ShadeAuto)"
+      }
+    },
+    "rf_close_direction": {
+      "options": {
+        "up": "Upwards",
+        "down": "Downwards"
+      }
+    },
+    "rf_capture_action": {
+      "options": {
+        "continue": "Continue",
+        "retry": "Retry capture",
+        "cancel": "Cancel learning"
+      }
+    },
+    "rf_profile_action": {
+      "options": {
+        "rename": "Rename or change room",
+        "remove": "Remove profile"
       }
     }
   }

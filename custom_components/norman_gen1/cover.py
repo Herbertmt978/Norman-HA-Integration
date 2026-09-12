@@ -104,6 +104,11 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Norman room and group covers."""
+    if entry.data.get(CONF_GENERATION) == "esphome_rf":
+        from .rf import async_setup_covers  # noqa: PLC0415
+
+        async_setup_covers(entry, async_add_entities)
+        return
     if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
         from .gen2 import cover as gen2_cover  # noqa: PLC0415
 
