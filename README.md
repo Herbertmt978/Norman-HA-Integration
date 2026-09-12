@@ -7,6 +7,12 @@ if your home uses both generations.
 Requires **Home Assistant 2024.11.0 or newer**. The integration does not require a
 cloud account. This project is independent of Norman.
 
+This branch also contains an **unreleased ESPHome RF bridge** transport. It uses
+a commissioned ESP32/nRF24 bridge directly, without a Norman hub. See the
+[RF guide](docs/esphome-rf.md) for its additional HA capability requirement,
+individual section and room controls, and explicit assumed-state behavior. Existing hub entries are
+not switched to RF automatically.
+
 ## Choose your generation
 
 | | Gen 1 | Gen 2 (ShadeAuto) |
@@ -110,7 +116,8 @@ real Home Assistant runtime tests with an HTTP hub fixture. Gen 2 hardware
 confidence comes from [keito's upstream SmartDrape testing](https://github.com/keito/home-assistant-norman/);
 this combined implementation has not been separately tested on physical Gen 2 hardware.
 Other device-specific mappings need verified device data. No unverified stop
-command or direct RF/Bluetooth control is advertised.
+command or direct Bluetooth shutter control is advertised. Direct RF is confined
+to the separately commissioned experimental transport described above.
 
 ## Development and verification
 

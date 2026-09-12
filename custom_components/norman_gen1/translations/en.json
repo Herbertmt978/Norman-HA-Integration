@@ -1,6 +1,7 @@
 {
   "config": {
     "abort": {
+      "no_rf_bridge": "No compatible ESPHome RF bridge was found. Adopt and commission a Norman RF Bridge first.",
       "already_configured": "This hub is already configured.",
       "hub_identity_unavailable": "Home Assistant cannot verify that the new address is the same hub. Remove and add the integration again, or reconnect the old address first so its hub ID can be learned.",
       "reauth_entry_missing": "The config entry is no longer available.",
@@ -9,6 +10,12 @@
       "wrong_hub": "The address or credentials belong to a different Norman hub."
     },
     "error": {
+      "rf_wrong_bridge": "Choose the existing bridge. Add a separate entry for another bridge.",
+      "rf_unavailable": "The ESPHome RF bridge is unavailable or its firmware does not support acknowledged RF actions.",
+      "rf_not_learned": "Commission at least one panel section and its preferred closing direction first.",
+      "rf_invalid_rooms": "Choose one or more complete learned rooms, each with at most eight sections. Check existing RF bindings if their inventory is invalid.",
+      "rf_inventory_changed": "The bridge inventory changed. Review the rooms and submit again to confirm the new commissioning.",
+      "rf_room_claimed": "A selected section already has a direct transmitter in another Norman RF entry. Deselect that room there before assigning it here.",
       "cannot_connect": "Could not connect to the Norman hub. Check the generation, IP address and network access.",
       "hub_needs_restart": "The hub's local control service is not responding. Restart the Norman hub, wait for its status light to settle, then try again.",
       "invalid_auth": "The hub rejected the password.",
@@ -18,9 +25,23 @@
       "invalid_response": "The ShadeAuto hub returned an invalid response."
     },
     "step": {
+      "rf": {
+        "title": "Connect an ESPHome RF bridge (experimental)",
+        "description": "Choose the ESPHome bridge that will transmit directly to the selected rooms. No Norman hub is called. Position is assumed, not measured.",
+        "data": {
+          "bridge": "ESPHome RF bridge"
+        }
+      },
+      "rf_rooms": {
+        "title": "Rooms controlled by this ESP bridge",
+        "description": "Select rooms within this bridge's tested range. Each learned section may have only one direct-command bridge in this integration. Other ESP bridges can still repeat its signals. Each room uses an interleaved batch, not a native room broadcast.",
+        "data": {
+          "rooms": "Rooms"
+        }
+      },
       "user": {
-        "title": "Connect a Norman hub",
-        "description": "Choose your hub generation. Gen 2 uses the ShadeAuto app.",
+        "title": "Connect Norman controls",
+        "description": "Choose a hub generation or an already commissioned ESPHome RF bridge. Gen 2 uses the ShadeAuto app.",
         "data": {
           "generation": "Hub generation"
         }
@@ -71,6 +92,7 @@
   },
   "options": {
     "abort": {
+      "rf_use_reconfigure": "Use Reconfigure to choose the learned closing direction. RF commissioning and autonomous relay settings belong to the ESPHome bridge.",
       "migration_pending": "Set up the integration successfully once before changing these options so the existing movement directions can be migrated safely.",
       "no_rooms": "No rooms are currently available to configure.",
       "no_targets": "No rooms or panels are available to configure.",
@@ -183,6 +205,7 @@
     "generation": {
       "options": {
         "gen1": "Gen 1",
+        "esphome_rf": "ESPHome RF bridge (experimental)",
         "gen2": "Gen 2 (ShadeAuto)"
       }
     }

@@ -1,6 +1,7 @@
 {
   "domain": "norman_gen1",
   "name": "Norman",
+  "after_dependencies": ["esphome"],
   "codeowners": ["@Herbertmt978"],
   "config_flow": true,
   "documentation": "https://github.com/Herbertmt978/Norman-HA-Integration",
@@ -8,5 +9,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/Herbertmt978/Norman-HA-Integration/issues",
   "requirements": [],
-  "version": "0.4.1"
+  "version": "0.5.0b1"
 }

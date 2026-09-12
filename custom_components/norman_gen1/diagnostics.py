@@ -22,6 +22,15 @@ async def async_get_config_entry_diagnostics(
     entry: NormanConfigEntry,
 ) -> dict[str, Any]:
     """Return privacy-safe diagnostics for a Norman Gen 1 hub."""
+    if entry.data.get(CONF_GENERATION) == "esphome_rf":
+        from .rf import rf_coordinator  # noqa: PLC0415
+
+        coordinator_rf = rf_coordinator(entry)
+        return {
+            "transport": "esphome_rf",
+            "connected": coordinator_rf.last_update_success,
+            "physical_feedback": False,
+        }
     if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
         from .gen2 import gen2_coordinator  # noqa: PLC0415
 

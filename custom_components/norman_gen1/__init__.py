@@ -32,6 +32,10 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: NormanConfigEntry) -> bool:
     """Set up a Norman Gen 1 hub from a config entry."""
+    if entry.data.get(CONF_GENERATION) == "esphome_rf":
+        from . import rf  # noqa: PLC0415
+
+        return await rf.async_setup_entry(hass, entry)
     if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
         from . import gen2  # noqa: PLC0415
 
@@ -87,6 +91,10 @@ async def _async_update_options(hass: HomeAssistant, entry: NormanConfigEntry) -
 
 async def async_unload_entry(hass: HomeAssistant, entry: NormanConfigEntry) -> bool:
     """Unload a Norman Gen 1 config entry."""
+    if entry.data.get(CONF_GENERATION) == "esphome_rf":
+        from . import rf  # noqa: PLC0415
+
+        return await rf.async_unload_entry(hass, entry)
     if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
         from . import gen2  # noqa: PLC0415
 
