@@ -14,7 +14,7 @@ motor acknowledgment. Native room packet generation remains unqualified.
 
 ## Setup
 
-1. Build firmware0.9 (native protocol3) and commission the ESP32/nRF24 bridge using its own guide. Observe the
+1. Build firmware0.9.2 (native protocol3) and commission the ESP32/nRF24 bridge using its own guide. Observe the
    actual panel for every learned direction; do not copy another home's frames.
 2. Adopt the board through HA's ESPHome integration. This transport requires
    native ESPHome actions with structured response support, as documented in
@@ -81,8 +81,10 @@ failed batch, even if some motors may have moved. State returns to unknown after
 entry reload. Do not use it as physical confirmation for safety decisions.
 
 Existing hub covers are independent and their assumed state may be stale after
-RF movement. There is no automatic hub fallback or retry after an uncertain RF
-send. Removing the RF entry leaves the underlying ESPHome device, Bluetooth
+RF movement. There is no automatic hub fallback or HA-level retry after an
+uncertain RF send. Firmware 0.9.2 can send two later identical bursts after a
+successful local command; see the repeat policy below. Removing the RF entry
+leaves the underlying ESPHome device, Bluetooth
 proxy and commissioned autonomous relay operating.
 
 ## Verification and limits
@@ -93,12 +95,31 @@ office movement and a lounge transport error. A later five-second-separated
 room sequence completed successfully in HA but closed only four of five office
 sections and two of four lounge panels. Its Open left two office sections
 closed; individual Opens restored them. A five-second gap is therefore not a
-demonstrated fix. The existing sunrise/sunset automation was left unchanged
-and disabled. Do not switch unattended schedules based on assumed cover state.
+demonstrated fix. The sunrise/sunset migration was initially held for that reason.
 
-Bridge0.9.1 provides a separately invoked, bounded identical-packet repeat
-diagnostic. These covers do not call it automatically or change their rolling
-counter ownership. Results belong in the bridge's RF research record.
+Bridge 0.9.2 now owns automatic command repeats: at most two extra identical
+bursts, normally at 20 and 40 seconds, with a 60-second expiry and no additional
+rolling-code reservations. Each ESPHome device has an **RF automatic command
+repeats** switch, default ON. New command attempts, observed conflicts,
+reconfiguration, disable and radio faults cancel pending work. Boot never
+replays an old command. An active burst is not interrupted, so a new action
+while the radio is busy may fail and need to be sent again after it finishes.
+The original HA response still covers only the first burst, not the outcome
+of background repeats. There is no physical acknowledgement.
+
+The manual diagnostic added in 0.9.1 remains available and shares the same
+repeat budget. These covers send one command; they don't add a second retry
+loop. See the [firmware policy](https://github.com/Herbertmt978/norman-rf-bridge/blob/main/docs/commissioning.md#automatic-command-repeats).
+
+At the owner's request, the existing office/lounge sunrise/sunset automation
+was subsequently migrated and enabled using the two local ESP room covers.
+The sun triggers are unchanged. The lounge action follows five seconds after
+the office action completes; the previous hub configuration is backed up.
+Norman phone-app schedules are unchanged and must be disabled separately if
+they conflict. This is an explicit choice to use the experimental controls,
+not a whole-house reliability pass: the automatic-repeat trial reached 4/4
+lounge panels closed but still missed one of five office sections. Both rooms
+were reopened. The earlier downstairs transmitter fault remains unexplained.
 
 The room-selection candidate passed230 tests in minimum, pinned and cached
 latest HA harnesses, plus117 unit tests; combined coverage98%, config-flow100%,
