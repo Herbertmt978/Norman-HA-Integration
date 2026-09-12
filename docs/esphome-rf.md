@@ -87,6 +87,19 @@ proxy and commissioned autonomous relay operating.
 
 ## Verification and limits
 
+Production camera checks on12September exposed intermittent delivery after
+the initial successful pairs. One combined two-room Close produced partial
+office movement and a lounge transport error. A later five-second-separated
+room sequence completed successfully in HA but closed only four of five office
+sections and two of four lounge panels. Its Open left two office sections
+closed; individual Opens restored them. A five-second gap is therefore not a
+demonstrated fix. The existing sunrise/sunset automation was left unchanged
+and disabled. Do not switch unattended schedules based on assumed cover state.
+
+Bridge0.9.1 provides a separately invoked, bounded identical-packet repeat
+diagnostic. These covers do not call it automatically or change their rolling
+counter ownership. Results belong in the bridge's RF research record.
+
 The room-selection candidate passed230 tests in minimum, pinned and cached
 latest HA harnesses, plus117 unit tests; combined coverage98%, config-flow100%,
 strict typing, Ruff and Hassfest pass. These tests
