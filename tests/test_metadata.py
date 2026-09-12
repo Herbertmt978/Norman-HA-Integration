@@ -36,7 +36,7 @@ def test_release_metadata_matches_supported_runtime() -> None:
     manifest = _json(INTEGRATION / "manifest.json")
     hacs = _json(ROOT / "hacs.json")
 
-    assert manifest["version"] == "0.5.0b1"
+    assert manifest["version"] == "0.5.0b2"
     assert manifest["name"] == hacs["name"] == "Norman"
     assert (
         manifest["documentation"]
@@ -46,7 +46,7 @@ def test_release_metadata_matches_supported_runtime() -> None:
     assert manifest["config_flow"] is True
     assert manifest["iot_class"] == "local_polling"
     assert hacs["homeassistant"] == "2024.11.0"
-    assert (ROOT / "docs" / "releases" / "v0.5.0b1.md").is_file()
+    assert (ROOT / "docs" / "releases" / "v0.5.0b2.md").is_file()
 
 
 def test_local_brand_assets_are_valid() -> None:

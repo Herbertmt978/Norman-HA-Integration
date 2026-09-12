@@ -14,8 +14,8 @@ motor acknowledgment. Native room packet generation remains unqualified.
 
 ## Setup
 
-1. Build firmware0.9.2 (native protocol3) and commission the ESP32/nRF24 bridge using its own guide. Observe the
-   actual panel for every learned direction; do not copy another home's frames.
+1. Install firmware0.10.0 (native protocol3 plus learning API1) on the ESP32/nRF24
+   bridge. Fit the antenna and follow its wiring guide.
 2. Adopt the board through HA's ESPHome integration. This transport requires
    native ESPHome actions with structured response support, as documented in
    [ESPHome's API guide](https://esphome.io/components/api/#action-responses).
@@ -23,10 +23,18 @@ motor acknowledgment. Native room packet generation remains unqualified.
    ESPHome integration supports this newer response protocol. A missing response
    capability is rejected during setup.
 3. Add **Norman**, choose **ESPHome RF bridge (experimental)** and select the
-   detected bridge, then explicitly select its rooms. Each selected learned
+   detected bridge. Use **Add a motorised section** or **Add an action for
+   repeating**, then explicitly select its rooms. Each selected learned
    section and complete room becomes a separate cover. Assign a room to its
    tested local bridge; repeat for another bridge with different rooms.
    Closing uses that target's commissioned preferred direction.
+
+The [learning and profile manual](https://github.com/Herbertmt978/norman-rf-bridge/blob/main/docs/learning.md)
+walks through the controller presses, confirmation, naming, room grouping and
+removal. Use **Reconfigure** later to add, rename, regroup or remove saved
+profiles. A new empty bridge can enter the wizard; a relay-only bridge can be
+saved without creating fictional shutter covers. Older firmware retains manual
+commissioning and room selection, without the new wizard.
 
 No hub host, password or rolling counter is entered in this flow. The ESP is
 the sole owner of learned frames and persistent RF sequence. The selected bridge
@@ -58,8 +66,8 @@ deliberately. Room names also define membership and room-cover identity, so
 renaming or moving a room requires separate review. Existing Norman hub covers
 are independent and keep their names and entity IDs.
 
-This workflow uses existing commissioning and reconfiguration actions; it does
-not require a new firmware build, movement command or production hub upgrade.
+The new wizard requires firmware0.10.0; the older inventory-only reconfigure
+route remains available. Neither route requires a Norman hub upgrade.
 Per-home physical mappings belong in installation data, never factory firmware.
 
 Each cover offers `cover.open_cover` and `cover.close_cover`. It does not expose
@@ -97,8 +105,8 @@ sections and two of four lounge panels. Its Open left two office sections
 closed; individual Opens restored them. A five-second gap is therefore not a
 demonstrated fix. The sunrise/sunset migration was initially held for that reason.
 
-Bridge 0.9.2 now owns automatic command repeats: at most two extra identical
-bursts, normally at 20 and 40 seconds, with a 60-second expiry and no additional
+Bridge 0.10.0 owns automatic command repeats: at most two extra identical
+bursts, two seconds after each successful completion, with a60-second expiry and no additional
 rolling-code reservations. Each ESPHome device has an **RF automatic command
 repeats** switch, default ON. New command attempts, observed conflicts,
 reconfiguration, disable and radio faults cancel pending work. Boot never

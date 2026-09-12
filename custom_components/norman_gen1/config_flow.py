@@ -60,6 +60,7 @@ from .profiles import (
     stored_position_profiles,
 )
 from .rf import RFStatus
+from .rf_learning import RFLearningFlow, supports_learning
 from .session import async_create_norman_session
 
 _LOGGER = logging.getLogger(__name__)
@@ -129,7 +130,7 @@ async def _fetch_validation_snapshot(
     return info, rooms, windows
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class ConfigFlow(RFLearningFlow, domain=DOMAIN):
     """Handle a config flow for Norman Gen 1 Hub."""
 
     VERSION = 2
@@ -195,13 +196,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 except (HomeAssistantError, TimeoutError):
                     errors["base"] = "rf_unavailable"
                 else:
-                    if not status.ready or not status.targets:
+                    if not status.ready or (
+                        not status.targets and not supports_learning(self.hass, prefix)
+                    ):
                         errors["base"] = "rf_not_learned"
                     else:
                         if entry is None:
                             await self.async_set_unique_id(f"rf_{prefix}")
                             self._abort_if_unique_id_configured()
                         self._rf_bridge, self._rf_status = prefix, status
+                        if supports_learning(self.hass, prefix):
+                            return await self.async_step_rf_manage()
                         return await self.async_step_rf_rooms()
         schema = vol.Schema(
             {
