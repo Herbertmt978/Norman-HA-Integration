@@ -1,17 +1,35 @@
-# Norman Home Assistant integration
+<div align="center">
 
-Control **Norman Gen 1** and **Gen 2 (ShadeAuto)** shutter and blind hubs over your
-local network. Choose your hub generation during setup. Add each hub separately
-if your home uses both generations.
+<img src="brand/header.svg" alt="Norman for Home Assistant: stylised shutter panels" width="620">
 
-Requires **Home Assistant 2024.11.0 or newer**. The integration does not require a
-cloud account. This project is independent of Norman.
+# Norman for Home Assistant
 
-This branch also contains an **unreleased ESPHome RF bridge** transport. It uses
-a commissioned ESP32/nRF24 bridge directly, without a Norman hub. See the
-[RF guide](docs/esphome-rf.md) for its additional HA capability requirement,
-individual section and room controls, and explicit assumed-state behavior. Existing hub entries are
-not switched to RF automatically.
+Local control for Norman Gen 1 and Gen 2 (ShadeAuto) shutter and blind hubs.
+
+[![HACS custom repository](https://img.shields.io/badge/HACS-Custom-41BDF5?logo=home-assistant&logoColor=white)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Herbertmt978&repository=Norman-HA-Integration&category=integration)
+[![Latest release](https://img.shields.io/github/v/release/Herbertmt978/Norman-HA-Integration?display_name=tag&sort=semver)](https://github.com/Herbertmt978/Norman-HA-Integration/releases/latest)
+[![Tests](https://github.com/Herbertmt978/Norman-HA-Integration/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Herbertmt978/Norman-HA-Integration/actions/workflows/tests.yml)
+![Home Assistant 2024.11+](https://img.shields.io/badge/Home%20Assistant-2024.11%2B-18BCF2?logo=home-assistant&logoColor=white)
+
+[Install](#installation) · [Compare generations](#choose-your-generation) · [Automations](#automations) · [RF bridge preview](#experimental-rf-bridge) · [Limits](#network-and-hardware-limits) · [Development](#development-and-verification)
+
+</div>
+
+---
+
+Choose the hub generation during setup and add each hub separately if you use
+both. The integration needs Home Assistant 2024.11.0 or newer and no cloud
+account. This is an independent community project, not an official Norman
+integration.
+
+## Experimental RF bridge
+
+The current repository also contains an **unreleased ESPHome RF transport** for
+a commissioned ESP32/nRF24 bridge. It can control individual sections and rooms
+without a Norman hub, but it reports assumed state rather than measured shutter
+position. It has additional Home Assistant requirements, and existing hub entries
+are never switched to RF automatically. Read the [RF setup and limitations
+guide](docs/esphome-rf.md) before trying it.
 
 ## Choose your generation
 
@@ -30,8 +48,6 @@ not switched to RF automatically.
 
 Version **0.4.0** adds support for both generations. Install the latest release
 through HACS, or use the manual method below.
-
-[![Open this repository in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Herbertmt978&repository=Norman-HA-Integration&category=integration)
 
 1. In HACS, open **Custom repositories**.
 2. Add [Herbertmt978/Norman-HA-Integration](https://github.com/Herbertmt978/Norman-HA-Integration) with category **Integration**.

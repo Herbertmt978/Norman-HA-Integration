@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 220" role="img" aria-labelledby="title desc">
+  <title id="title">Norman for Home Assistant</title>
+  <desc id="desc">A pair of shutter panels beside the Norman Home Assistant wordmark.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#101c38"/>
+      <stop offset="1" stop-color="#182c50"/>
+    </linearGradient>
+  </defs>
+  <rect width="860" height="220" rx="28" fill="url(#background)"/>
+  <rect x="38" y="39" width="142" height="142" rx="24" fill="#20385f" stroke="#36537a" stroke-width="2"/>
+  <path d="M69 76h80M69 98h80M69 120h80M69 142h80" stroke="#67dded" stroke-width="9" stroke-linecap="round"/>
+  <path d="M62 64v91M156 64v91" stroke="#a78bfa" stroke-width="5" stroke-linecap="round"/>
+  <text x="220" y="113" fill="#f5f8ff" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="700" letter-spacing="2">NORMAN</text>
+  <text x="222" y="153" fill="#a9c4e4" font-family="Arial, Helvetica, sans-serif" font-size="23" letter-spacing="4">HOME ASSISTANT INTEGRATION</text>
+</svg>
