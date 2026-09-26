@@ -1,6 +1,6 @@
 aiohttp==3.14.3
 coverage==7.13.5
-pytest==9.0.3
+pytest==9.1.1
 pytest-asyncio==1.4.0
 pytest-cov==7.1.0
 ruff==0.15.21
