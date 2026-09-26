@@ -1,0 +1,197 @@
+name: Dependabot auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
+
+# Read trusted PR metadata only. Never check out or execute pull-request code.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  manage:
+    if: >-
+      github.repository == 'Herbertmt978/Norman-HA-Integration' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'dependabot/pip/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Clear stale automatic merge request
+        if: github.event.action == 'synchronize' || github.event.action == 'converted_to_draft'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" == "true" ]]; then
+            gh pr merge --disable-auto "$PR_URL"
+          fi
+
+      - name: Read Dependabot metadata
+        if: github.actor == 'dependabot[bot]' && github.event.pull_request.draft == false
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Check automatic merge policy
+        if: github.actor == 'dependabot[bot]' && github.event.pull_request.draft == false
+        id: policy
+        shell: bash
+        env:
+          DEPENDENCY_GROUP: ${{ steps.metadata.outputs.dependency-group }}
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+          DIRECTORY: ${{ steps.metadata.outputs.directory }}
+          GH_TOKEN: ${{ github.token }}
+          MAINTAINER_CHANGES: ${{ steps.metadata.outputs.maintainer-changes }}
+          NEW_VERSION: ${{ steps.metadata.outputs.new-version }}
+          PACKAGE_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$DEPENDENCY_GROUP" || "$MAINTAINER_CHANGES" != "false" ]]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$PACKAGE_ECOSYSTEM" != "pip" || "$DIRECTORY" != "/" ]]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          case "$UPDATE_TYPE" in
+            version-update:semver-patch|version-update:semver-minor) ;;
+            *)
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          if [[ ! "$NEW_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          dependency_count=0
+          dependency_name=""
+          IFS=',' read -r -a dependencies <<< "$DEPENDENCY_NAMES"
+          for dependency in "${dependencies[@]}"; do
+            dependency="${dependency//[[:space:]]/}"
+            [[ -z "$dependency" ]] && continue
+            dependency_count=$((dependency_count + 1))
+            dependency_name="$dependency"
+          done
+
+          if [[ "$dependency_count" -ne 1 ]]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          case "$PACKAGE_ECOSYSTEM:$dependency_name" in
+            pip:ruff|pip:pytest|pip:pytest-asyncio)
+              expected_files='requirements_test.txt'
+              ;;
+            *)
+              echo "eligible=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          changed_files="$(gh pr diff "$PR_URL" --name-only | LC_ALL=C sort)"
+          if [[ "$changed_files" != "$expected_files" ]]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          review_data="$(gh pr view "$PR_URL" --json reviews,reviewDecision)"
+          review_blocked="$(python -c '
+          import json
+          import sys
+          from datetime import datetime
+
+          pull_request = json.load(sys.stdin)
+          if not isinstance(pull_request, dict) or "reviewDecision" not in pull_request:
+              raise ValueError("Review decision metadata is missing")
+          decision = pull_request.get("reviewDecision")
+          valid_decisions = {None, "", "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"}
+          if decision not in valid_decisions:
+              raise ValueError("Unexpected review decision")
+
+          reviews = pull_request.get("reviews")
+          if not isinstance(reviews, list) or len(reviews) >= 100:
+              raise ValueError("Review data is missing or may be truncated")
+
+          latest_reviews = {}
+          valid_states = {
+              "APPROVED",
+              "CHANGES_REQUESTED",
+              "COMMENTED",
+              "DISMISSED",
+              "PENDING",
+          }
+          merge_relevant_states = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+          for review in reviews:
+              if not isinstance(review, dict):
+                  raise ValueError("Malformed review entry")
+              author_data = review.get("author")
+              if not isinstance(author_data, dict):
+                  raise ValueError("Malformed review author")
+              author = author_data.get("login")
+              if not isinstance(author, str) or not author.strip():
+                  raise ValueError("Malformed review author login")
+              state = review.get("state")
+              if state not in valid_states:
+                  raise ValueError("Unexpected review state")
+              if "submittedAt" not in review:
+                  raise ValueError("Review has no timestamp field")
+              submitted_at = review.get("submittedAt")
+              if submitted_at is None:
+                  if state != "PENDING":
+                      raise ValueError("Non-pending review has no timestamp")
+                  continue
+              if not isinstance(submitted_at, str):
+                  raise ValueError("Malformed review timestamp")
+              timestamp = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+              if timestamp.tzinfo is None:
+                  raise ValueError("Review timestamp is not timezone-aware")
+              if state not in merge_relevant_states:
+                  continue
+              previous = latest_reviews.get(author)
+              if previous is None or timestamp > previous["submittedAt"]:
+                  latest_reviews[author] = {"state": state, "submittedAt": timestamp}
+              elif timestamp == previous["submittedAt"] and state != previous["state"]:
+                  raise ValueError("Ambiguous review ordering")
+
+          print(
+              "true"
+              if decision == "CHANGES_REQUESTED"
+              or any(review["state"] == "CHANGES_REQUESTED" for review in latest_reviews.values())
+              else "false"
+          )
+          ' <<< "$review_data")"
+          if [[ "$review_blocked" != "false" ]]; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "eligible=true" >> "$GITHUB_OUTPUT"
+
+      - name: Queue eligible update for automatic merge
+        if: steps.policy.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash --match-head-commit "$PR_HEAD_SHA" "$PR_URL"
