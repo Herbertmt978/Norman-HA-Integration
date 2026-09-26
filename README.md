@@ -161,6 +161,9 @@ Major and pre-release updates, Home Assistant compatibility fixtures, runtime
 dependencies, grouped updates, and unexpected file changes stay manual. GitHub
 branch protection still requires every check and resolved review conversation;
 this policy does not approve pull requests or publish releases.
+Reviewer change requests are checked before queuing. Reviews submitted after
+queuing are not monitored by this workflow and do not cancel the queue; the
+configured branch checks and resolved-thread rule still apply.
 
 See the [verification record](docs/aegis/work/2026-09-10-gen2-shadeauto/90-evidence.md),
 [changelog](docs/CHANGELOG.md) and [future Core submission checklist](docs/core-submission.md).
