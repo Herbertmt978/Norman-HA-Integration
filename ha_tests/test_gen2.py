@@ -13,6 +13,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+import voluptuous as vol
 
 from custom_components.norman_gen1.const import DOMAIN
 from custom_components.norman_gen1.diagnostics import async_get_config_entry_diagnostics
@@ -142,6 +143,27 @@ async def test_generation_choice_and_gen2_setup(hass, shadeauto):
     assert await hass.config_entries.async_unload(configured.entry_id)
     await hass.async_block_till_done()
     assert shadeauto.async_close.await_count == 2
+
+
+@pytest.mark.parametrize("service", ["nudge_position", "nudge_tilt"])
+@pytest.mark.parametrize("step", [-101, 101, "invalid"])
+async def test_nudge_schema_rejects_invalid_input(hass, shadeauto, service, step):
+    """The active HA engine rejects invalid commands before contacting the hub."""
+    configured = entry(hass)
+    assert await hass.config_entries.async_setup(configured.entry_id)
+    await hass.async_block_till_done()
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "cover", DOMAIN, "gen2_shade-hub_7"
+    )
+
+    with pytest.raises(vol.Invalid):
+        await hass.services.async_call(
+            DOMAIN,
+            service,
+            {"entity_id": entity_id, "step": step},
+            blocking=True,
+        )
+    shadeauto.async_set_position.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

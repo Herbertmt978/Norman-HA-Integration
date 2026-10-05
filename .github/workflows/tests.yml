@@ -91,7 +91,6 @@ jobs:
 
   home-assistant-latest:
     name: Latest Home Assistant compatibility watch
-    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
