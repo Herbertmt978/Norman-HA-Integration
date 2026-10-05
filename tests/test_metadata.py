@@ -72,4 +72,9 @@ def test_ci_keeps_current_and_minimum_home_assistant_gates() -> None:
 
     assert "2024.11 minimum" in workflow
     assert "--fail-under=95" in workflow
+    assert "--fail-under=100" in workflow
     assert "requirements_ha_current.txt" in workflow
+    latest_lane = workflow.split("  home-assistant-latest:", maxsplit=1)[1]
+    assert "if:" not in latest_lane
+    assert "python -m mypy custom_components/norman_gen1 --strict" in latest_lane
+    assert "python -m pytest ha_tests -q" in latest_lane

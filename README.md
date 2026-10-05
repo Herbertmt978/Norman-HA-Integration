@@ -140,7 +140,15 @@ to the separately commissioned experimental transport described above.
 Unit tests cover protocol and Gen 1 behavior; `ha_tests` exercises both generations
 through real Home Assistant test runtimes. CI requires at least 95% combined
 coverage and 100% config-flow coverage, with minimum-version and pinned-version
-lanes. A scheduled lane checks the latest HA test harness.
+lanes. Every run also checks the latest HA test harness, so compatibility
+regressions are visible before merging as well as in the scheduled watch.
+
+Home Assistant selects the runtime validation engine: HA 2026.9 and later
+resolve the legacy import to Probatio, while older releases retain Voluptuous.
+The modern MyPy environments mirror that alias through the local typing stub,
+so strict checks see Probatio classes even with HA's transitional annotations.
+No runtime dependency or global alias is added by Norman. Minimum-version
+runtime tests still use the real Voluptuous engine.
 
 ```bash
 python -m pip install -r requirements_test.txt
