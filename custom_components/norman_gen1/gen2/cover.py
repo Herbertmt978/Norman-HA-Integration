@@ -37,6 +37,7 @@ from .const import (
     SERVICE_NUDGE_TILT,
 )
 from .coordinator import NormanCoordinator
+from .room import NormanRoomCover
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,17 +52,28 @@ async def async_setup_entry(
     """Set up Norman cover devices."""
     coordinator = cast(NormanCoordinator, entry.runtime_data)
 
-    entities: list[NormanCoverBase] = []
+    entities: list[CoverEntity] = []
+    rooms: dict[int, str] = {}
     for device_id, device_data in coordinator.data.items():
         cover_type = device_data.type
 
         if cover_type == COVER_TYPE_SMARTDRAPE:
             entities.append(NormanBlind(coordinator, device_id, entry))
+            if type(device_data.room_id) is int:
+                rooms.setdefault(
+                    device_data.room_id,
+                    device_data.room_name or f"Room {device_data.room_id}",
+                )
         else:
             # TODO: Support other kinds of blinds
             raise HomeAssistantError(
                 f"Unsupported cover type {cover_type} for device {device_id}"
             )
+
+    entities.extend(
+        NormanRoomCover(coordinator, room_id, room_name, entry)
+        for room_id, room_name in rooms.items()
+    )
 
     # Register a service to nudge the position of the blinds
     platform = async_get_current_platform()

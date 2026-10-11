@@ -16,6 +16,39 @@ hub identity, so matching peripheral numbers on separate hubs do not collide.
 Gen 1 passwords, movement profiles, room broadcasts and battery sensors do not
 apply to this backend.
 
+### Room covers
+
+Each discovered room with an integer room ID and at least one shade also gets a
+separate **Shades** cover, alongside the individual covers. For example, a room
+named Living room gets a Living room Shades cover. Existing individual cover
+identities are unchanged. Reload the integration after changing room membership
+in ShadeAuto, because discovery metadata is read at setup.
+
+Room controls send the existing per-shade commands sequentially; they are not a
+single hub broadcast and do not guarantee simultaneous movement. Open, close,
+position, tilt and nudge actions affect only the shades discovered in that room.
+Each shade keeps its own other rail position or pending target. A nudge is relative
+to each shade's own position, not the room average.
+
+All member positions are checked before any command is sent. If an untouched rail
+is unknown, nothing moves. If a hub request fails after commands have started, the
+action reports the failure, stops sending further commands and refreshes status.
+Some shades may already have moved; a connection failure can also leave the failed
+shade's movement uncertain. Check the actual shades before trying again. There is
+no automatic retry or rollback movement.
+
+The room position is the average of its members' reported positions. It is unknown
+if any member's position is unknown. The room is closed only when every member is
+closed, and becomes unavailable if its hub is unavailable or it has no members.
+The member count and mean pending targets are available as state attributes.
+
+This room-control addition is available for opt-in testing in **v0.5.0b3** and has
+not yet been checked on physical Gen 2 hardware. The maintainer only has a Gen 1 hub.
+See the [beta test and rollback instructions](releases/v0.5.0b3.md). The room commands in
+[nsleigh/norman-blinds](https://github.com/nsleigh/norman-blinds) use the different
+legacy CGI API; they are not used for ShadeAuto. A verified Gen 2 app request would
+be needed before adding a native room-broadcast command.
+
 The mapping comes from keito's SmartDrape implementation: the bottom rail maps
 to cover position and the middle rail maps to tilt. With a compatible two-rail
 shade, tilt controls the second rail. Both use 0–100. Device-specific mappings

@@ -31,6 +31,33 @@ _LOGGER = logging.getLogger(__name__)
 PENDING_TARGET_TIMEOUT = 30
 
 
+def _resolve_rail_position(
+    current: int | None,
+    target: int | None,
+    requested: int | None,
+    *,
+    nudge: bool,
+) -> int:
+    """Resolve one rail without changing state or sending a command."""
+    position = target if target is not None else current
+    if requested is not None:
+        if nudge:
+            if position is None:
+                raise HomeAssistantError("ShadeAuto rail position is unknown")
+            position = max(0, min(100, position + requested))
+        else:
+            position = requested
+    if position is None:
+        raise HomeAssistantError(
+            "Cannot preserve an unknown rail position; refresh the hub first"
+        )
+    try:
+        validate_position(position)
+    except ValueError as err:
+        raise HomeAssistantError(str(err)) from err
+    return position
+
+
 class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
     """Norman data update coordinator."""
 
@@ -134,39 +161,94 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
             data = self.data.get(device_id)
             if not self.last_update_success or data is None:
                 raise HomeAssistantError("ShadeAuto device is unavailable")
-            positions: list[int] = []
-            for rail, requested in (("bottom", bottom), ("middle", middle)):
-                target = self.target_position(device_id, rail)
-                current = getattr(data, f"{rail}_rail_position")
-                position = target if target is not None else current
-                if requested is not None:
-                    if nudge:
-                        if position is None:
-                            raise HomeAssistantError(
-                                "ShadeAuto rail position is unknown"
-                            )
-                        position = max(0, min(100, position + requested))
-                    else:
-                        position = requested
-                if position is None:
-                    raise HomeAssistantError(
-                        "Cannot preserve an unknown rail position; refresh the hub first"
-                    )
-                try:
-                    validate_position(position)
-                except ValueError as err:
-                    raise HomeAssistantError(str(err)) from err
-                positions.append(position)
+            positions = self._resolve_positions(data, bottom, middle, nudge=nudge)
             await self.api.async_set_position(device_id, *positions)
-            for rail, requested, position in zip(
-                ("bottom", "middle"), (bottom, middle), positions, strict=True
-            ):
-                if requested is not None:
-                    self._pending_targets[device_id, rail] = (
-                        position,
-                        monotonic() + PENDING_TARGET_TIMEOUT,
-                    )
+            self._retain_targets(device_id, bottom, middle, positions)
         await self.async_request_refresh()
+
+    async def async_set_room_position(
+        self,
+        room_id: int,
+        *,
+        bottom: int | None,
+        middle: int | None,
+        nudge: bool = False,
+    ) -> None:
+        """Preflight all room members, then send serial peripheral commands."""
+        attempted = False
+        try:
+            async with self._command_lock:
+                if not self.last_update_success:
+                    raise HomeAssistantError("ShadeAuto room is unavailable")
+                if type(room_id) is not int:
+                    raise HomeAssistantError("ShadeAuto room ID must be an integer")
+                members = {
+                    device_id: data
+                    for device_id, data in self.data.items()
+                    if type(data.room_id) is int and data.room_id == room_id
+                }
+                if not members:
+                    raise HomeAssistantError("ShadeAuto room has no available members")
+                # Resolve every child before moving any of them. Preserved rails and
+                # relative nudges use each child's own current or pending target.
+                positions_by_device = {
+                    device_id: self._resolve_positions(
+                        data, bottom, middle, nudge=nudge
+                    )
+                    for device_id, data in members.items()
+                }
+                for device_id, positions in positions_by_device.items():
+                    attempted = True
+                    try:
+                        await self.api.async_set_position(device_id, *positions)
+                    except (NormanConnectionError, NormanApiError) as err:
+                        raise HomeAssistantError(
+                            "ShadeAuto room command failed; some shades may have moved "
+                            "and the failed shade's movement is uncertain. "
+                            "Remaining shades were not commanded"
+                        ) from err
+                    self._retain_targets(device_id, bottom, middle, positions)
+        finally:
+            # Refresh acquires the same lock, so it must happen after releasing it.
+            if attempted:
+                self.async_update_listeners()
+                await self.async_request_refresh()
+
+    def _resolve_positions(
+        self,
+        data: NormanPeripheralData,
+        bottom: int | None,
+        middle: int | None,
+        *,
+        nudge: bool,
+    ) -> list[int]:
+        """Resolve each rail using the same rules for individual and room commands."""
+        return [
+            _resolve_rail_position(
+                getattr(data, f"{rail}_rail_position"),
+                self.target_position(data.id, rail),
+                requested,
+                nudge=nudge,
+            )
+            for rail, requested in (("bottom", bottom), ("middle", middle))
+        ]
+
+    def _retain_targets(
+        self,
+        device_id: int,
+        bottom: int | None,
+        middle: int | None,
+        positions: list[int],
+    ) -> None:
+        """Retain only requested rails after the hub accepts a command."""
+        for rail, requested, position in zip(
+            ("bottom", "middle"), (bottom, middle), positions, strict=True
+        ):
+            if requested is not None:
+                self._pending_targets[device_id, rail] = (
+                    position,
+                    monotonic() + PENDING_TARGET_TIMEOUT,
+                )
 
     def _process_data(
         self, device_info: dict[str, Any], status_data: dict[str, Any]

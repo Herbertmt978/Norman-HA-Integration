@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0b3 — 11 October 2026 (beta)
+
+- Add a separate cover for each discovered Gen 2 ShadeAuto room, retaining individual covers.
+- Use existing per-shade commands sequentially, preserving each shade's other rail and pending target. Native simultaneous room broadcasts are not assumed.
+- Preflight all room members before sending commands; stop and report uncertainty on partial failure without automatic retries.
+- Add room discovery, public-service, reload, multi-hub and failure-path regression tests.
+- This opt-in beta includes the existing v0.5 RF work and Home Assistant schema-compatibility changes from main. Gen 2 room operation still needs user hardware testing; the maintainer only owns Gen 1. Stable v0.4.1 is unchanged.
+
 ## 0.5.0b1 — ESPHome RF bridge candidate
 
 - Add a separate commissioned ESPHome RF bridge entry without hub credentials,
