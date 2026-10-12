@@ -119,6 +119,7 @@ class FakeCoordinator:
         self.listeners: list = []
         self.refresh_calls = 0
         self.shutdown_calls = 0
+        self.transient_failure_count = 0
 
     def async_add_listener(self, listener):
         self.listeners.append(listener)

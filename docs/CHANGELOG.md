@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0b4 — 12 October 2026 (beta)
+
+- Space Gen 2 control requests by at least 750 ms per hub and allocate distinct command timestamps and signed 31-bit task IDs, including when the wall clock stalls or moves backwards.
+- Include the registered ThingName in control requests. Individual covers, HA cover groups and room covers use the same paced client.
+- Accept numeric-string room IDs without changing existing room or individual identities; retain individual covers for invalid room identities.
+- Add privacy-safe discovery warnings and diagnostic counts, ID types and rejection reasons for missing room devices.
+- Add transport and public-service regression coverage. These changes address plausible causes of issues #25 and #26; physical Gen 2 feedback remains required. No automatic movement retries or native room broadcast are added.
+- Stable v0.4.1 remains unchanged. This beta retains the inherited v0.5 RF and schema-compatibility work.
+
 ## 0.5.0b3 — 11 October 2026 (beta)
 
 - Add a separate cover for each discovered Gen 2 ShadeAuto room, retaining individual covers.

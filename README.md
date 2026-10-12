@@ -22,7 +22,8 @@ both. The integration needs Home Assistant 2024.11.0 or newer and no cloud
 account. This is an independent community project, not an official Norman
 integration.
 
-**Opt-in beta:** [v0.5.0b3](docs/releases/v0.5.0b3.md) adds Gen 2 room covers.
+**Opt-in beta:** [v0.5.0b4](docs/releases/v0.5.0b4.md) adds Gen 2 room covers,
+spaces shade commands and accepts numeric-string room IDs.
 Physical Gen 2 testing is still needed; the maintainer only has Gen 1 hardware.
 Stable v0.4.1 remains unchanged. Read the linked test and rollback instructions
 before installing the beta.

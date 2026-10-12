@@ -204,6 +204,11 @@ class TestRoomPositionControl(unittest.TestCase):
 
 
 class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.retry_delay = patch.object(api_module, "LOGIN_RETRY_DELAY_SECONDS", 0)
+        self.retry_delay.start()
+        self.addCleanup(self.retry_delay.stop)
+
     async def test_login_drains_streaming_500_before_starting_recovery(
         self,
     ) -> None:
@@ -469,6 +474,7 @@ class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
                 FakeResponse(status=500, text="Internal Server Error"),
                 FakeResponse(status=500, text="Internal Server Error"),
                 FakeResponse(status=500, text="Internal Server Error"),
+                FakeResponse(status=500, text="Internal Server Error"),
             ]
         )
         api = NormanGen1Api(session, "192.0.2.10", "123456789")
@@ -478,11 +484,17 @@ class TestGatewayLoginRecovery(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             str(caught.exception),
-            "The Norman hub did not recover its login service; restart the hub and try again",
+            "The Norman hub login service remained unavailable after three attempts; check the hub connection and try again. Restart the hub only if the problem persists.",
         )
         self.assertEqual(
             [request["url"].rsplit("/", 1)[-1] for request in session.requests],
-            ["GatewayLogin", "AdminLogout", "GatewayLogout", "GatewayLogin"],
+            [
+                "GatewayLogin",
+                "AdminLogout",
+                "GatewayLogout",
+                "GatewayLogin",
+                "GatewayLogin",
+            ],
         )
 
     async def test_string_invalid_auth_error_code_is_normalized(self) -> None:

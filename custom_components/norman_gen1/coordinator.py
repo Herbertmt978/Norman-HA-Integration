@@ -13,6 +13,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import (
     CannotConnect,
+    HubNeedsRestart,
     InvalidAuth,
     InvalidSession,
     NoDevicesFound,
@@ -60,31 +61,66 @@ class NormanDataUpdateCoordinator(DataUpdateCoordinator[NormanData]):
         self.api = api
         self.hub_device_id: str | None = None
         self._known_rooms_by_id: dict[int, NormanRoom] = {}
+        self._transient_failure_count = 0
+        self._snapshot_retention_eligible = False
+
+    @property
+    def transient_failure_count(self) -> int:
+        """Return consecutive transient login failures since the last good poll."""
+        return self._transient_failure_count
 
     async def _async_update_data(self) -> NormanData:
         """Fetch fresh hub data and translate failures for Home Assistant."""
         for attempt in range(2):
             try:
-                return await self._fetch_data()
+                data = await self._fetch_data()
+            except HubNeedsRestart as err:
+                self._transient_failure_count += 1
+                if (
+                    self._snapshot_retention_eligible
+                    and self.data is not None
+                    and self._transient_failure_count <= 2
+                ):
+                    _LOGGER.warning(
+                        "Norman hub login is temporarily unavailable "
+                        "(failure %s/2); retaining the last successful snapshot",
+                        self._transient_failure_count,
+                    )
+                    return self.data
+                self._snapshot_retention_eligible = False
+                raise UpdateFailed(str(err)) from err
             except InvalidSession as err:
                 if attempt == 0:
                     continue
+                self._reset_snapshot_retention()
                 raise UpdateFailed(
                     "Hub repeatedly rejected the authenticated session"
                 ) from err
             except InvalidAuth as err:
+                self._reset_snapshot_retention()
                 raise ConfigEntryAuthFailed(
                     translation_domain=DOMAIN,
                     translation_key="invalid_auth",
                 ) from err
             except UnexpectedHub as err:
+                self._reset_snapshot_retention()
                 raise ConfigEntryError(
                     translation_domain=DOMAIN,
                     translation_key="wrong_hub",
                 ) from err
             except (CannotConnect, NoDevicesFound) as err:
+                self._reset_snapshot_retention()
                 raise UpdateFailed(str(err)) from err
+            else:
+                self._transient_failure_count = 0
+                self._snapshot_retention_eligible = True
+                return data
         raise AssertionError("Norman refresh retry loop did not return or raise")
+
+    def _reset_snapshot_retention(self) -> None:
+        """Require a fresh successful poll before retaining a snapshot again."""
+        self._transient_failure_count = 0
+        self._snapshot_retention_eligible = False
 
     async def _fetch_data(self) -> NormanData:
         """Fetch and normalize one complete hub snapshot."""

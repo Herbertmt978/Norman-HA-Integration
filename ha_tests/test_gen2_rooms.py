@@ -176,7 +176,7 @@ async def test_room_becomes_unavailable_when_empty_or_hub_fails(hass, rooms):
     assert hass.states.get(entity_id).state == "unavailable"
 
 
-@pytest.mark.parametrize("room_id", [None, True, "1", 1.5])
+@pytest.mark.parametrize("room_id", [None, True, 1.5, "", "1.5", "not-a-number"])
 async def test_invalid_room_identity_does_not_create_group(hass, shadeauto, room_id):
     """Keep individual covers even when room identity is missing or malformed."""
     shadeauto.async_get_devices.return_value["results"]["RoomList"][0]["RoomID"] = (
@@ -188,7 +188,19 @@ async def test_invalid_room_identity_does_not_create_group(hass, shadeauto, room
     entities = er.async_entries_for_config_entry(
         er.async_get(hass), configured.entry_id
     )
-    assert [item.unique_id for item in entities] == ["gen2_shade-hub_7"]
+    assert [
+        item.unique_id for item in entities if item.entity_id.startswith("cover.")
+    ] == ["gen2_shade-hub_7"]
+
+
+async def test_numeric_string_room_identity_normalises_to_integer(hass, shadeauto):
+    """A decimal numeric string produces the same persistent room identity."""
+    shadeauto.async_get_devices.return_value["results"]["RoomList"][0]["RoomID"] = "1"
+    _, entity_id = await setup_rooms(hass)
+    assert er.async_get(hass).async_get(entity_id).unique_id == (
+        "gen2_shade-hub_room_1"
+    )
+    assert hass.states.get(entity_id).attributes["member_count"] == 1
 
 
 async def test_unnamed_room_has_stable_fallback(hass, shadeauto):
@@ -196,6 +208,39 @@ async def test_unnamed_room_has_stable_fallback(hass, shadeauto):
     shadeauto.async_get_devices.return_value["results"]["RoomList"][0]["RoomName"] = ""
     _, entity_id = await setup_rooms(hass)
     assert hass.states.get(entity_id).name == "Room 1 Shades"
+
+
+async def test_invalid_room_identity_warning_is_private_and_deduplicated(
+    hass, shadeauto, caplog
+):
+    """Invalid IDs keep individual covers and produce one redacted summary."""
+    room = shadeauto.async_get_devices.return_value["results"]["RoomList"][0]
+    room["RoomID"] = "private-room-id"
+    room["RoomName"] = "private-room-name"
+    configured = entry(hass)
+    assert await hass.config_entries.async_setup(configured.entry_id)
+    await hass.async_block_till_done()
+    await configured.runtime_data.async_request_refresh()
+    await hass.async_block_till_done()
+
+    warning_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "Skipped" in record.getMessage()
+        and "invalid identities" in record.getMessage()
+    ]
+    assert len(warning_messages) == 1
+    assert "malformed" in warning_messages[0]
+    assert "private-room-id" not in warning_messages[0]
+    assert "private-room-name" not in warning_messages[0]
+    registry = er.async_get(hass)
+    assert registry.async_get_entity_id("cover", DOMAIN, "gen2_shade-hub_7")
+    assert (
+        registry.async_get_entity_id(
+            "cover", DOMAIN, "gen2_shade-hub_room_private-room-id"
+        )
+        is None
+    )
 
 
 async def test_matching_room_numbers_on_separate_hubs_stay_isolated(hass, rooms):

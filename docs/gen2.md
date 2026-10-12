@@ -13,16 +13,21 @@ for installation and [the Gen 1 guide](gen1.md) for older hubs.
 Setup registers with the hub, reads its identity, then checks discovery and
 status. Each discovered peripheral becomes a cover. Its unique ID includes the
 hub identity, so matching peripheral numbers on separate hubs do not collide.
-Gen 1 passwords, movement profiles, room broadcasts and battery sensors do not
-apply to this backend.
+Gen 1 passwords, movement profiles and room broadcasts do not apply to this backend.
 
 ### Room covers
 
-Each discovered room with an integer room ID and at least one shade also gets a
+Each discovered room with an integer or numeric-string room ID and at least one shade also gets a
 separate **Shades** cover, alongside the individual covers. For example, a room
 named Living room gets a Living room Shades cover. Existing individual cover
 identities are unchanged. Reload the integration after changing room membership
 in ShadeAuto, because discovery metadata is read at setup.
+
+Individual and room controls share a per-hub queue. Control requests start at
+least 750 ms apart and carry distinct timestamps and task IDs, plus the hub
+identity returned during registration. A slow request may take longer; different
+hubs have independent queues. This is a compatibility measure based on other
+ShadeAuto clients, awaiting physical Gen 2 feedback.
 
 Room controls send the existing per-shade commands sequentially; they are not a
 single hub broadcast and do not guarantee simultaneous movement. Open, close,
@@ -30,8 +35,13 @@ position, tilt and nudge actions affect only the shades discovered in that room.
 Each shade keeps its own other rail position or pending target. A nudge is relative
 to each shade's own position, not the room average.
 
-All member positions are checked before any command is sent. If an untouched rail
-is unknown, nothing moves. If a hub request fails after commands have started, the
+All member positions are checked before any command is sent. If an untouched
+second rail has been reported by the hub but its position is unknown, nothing moves.
+A shade that has never reported either middle-rail field receives bottom-only
+commands, with the middle field omitted from the request. It has no tilt actions.
+Once a second rail has been observed during the current integration load, a later
+missing field does not reclassify it. Rail observation starts afresh on reload.
+A mixed room offers bottom-rail actions only. If a hub request fails after commands have started, the
 action reports the failure, stops sending further commands and refreshes status.
 Some shades may already have moved; a connection failure can also leave the failed
 shade's movement uncertain. Check the actual shades before trying again. There is
@@ -42,14 +52,18 @@ if any member's position is unknown. The room is closed only when every member i
 closed, and becomes unavailable if its hub is unavailable or it has no members.
 The member count and mean pending targets are available as state attributes.
 
-This room-control addition is available for opt-in testing in **v0.5.0b3** and has
+This room-control addition is available for opt-in testing in **v0.5.0b4** and has
 not yet been checked on physical Gen 2 hardware. The maintainer only has a Gen 1 hub.
-See the [beta test and rollback instructions](releases/v0.5.0b3.md). The room commands in
+See the [beta test and rollback instructions](releases/v0.5.0b4.md). The room commands in
 [nsleigh/norman-blinds](https://github.com/nsleigh/norman-blinds) use the different
 legacy CGI API; they are not used for ShadeAuto. A verified Gen 2 app request would
 be needed before adding a native room-broadcast command.
 
-The mapping comes from keito's SmartDrape implementation: the bottom rail maps
+There is no verified capability table for `ModuleType`/`ModuleDetail`. Second-rail
+capabilities therefore follow the fields reported by the hub, rather than guessed
+model numbers. This requires physical testing on single-rail and mixed rooms.
+
+The two-rail mapping comes from keito's SmartDrape implementation: the bottom rail maps
 to cover position and the middle rail maps to tilt. With a compatible two-rail
 shade, tilt controls the second rail. Both use 0–100. Device-specific mappings
 beyond this upstream model require verified device data.
@@ -58,8 +72,9 @@ beyond this upstream model require verified device data.
 
 Use the standard cover actions for opening, closing and setting the position or
 tilt. Controlling one rail preserves the latest known target of the other rail,
-or its reported position if no target is available. If the other rail is unknown,
-the command fails instead of guessing a position. Accepted targets are retained
+or its reported position if no target is available. An unknown previously reported
+rail blocks the command instead of guessing a position. A middle rail never
+reported by the hub is omitted on bottom-only commands. Accepted targets are retained
 for up to 30 seconds while the hub catches up, so consecutive commands and nudges
 preserve each other. Hub acknowledgement or timeout restores the reported target.
 Malformed rail values make the hub unavailable until a valid status refresh.
@@ -97,14 +112,25 @@ No stop action is exposed: the imported local API has no verified stop command.
 ## State updates and reconnection
 
 The integration discovers devices, fetches their status and opens a local
-notification stream. A notification triggers a fresh status request. Commands
-also request a status refresh. The listener reconnects after a connection failure
-and periodically renews the stream. Failed status requests mark covers unavailable;
-valid later responses restore availability.
+notification stream. Notifications and command bursts schedule a status request
+after two quiet seconds; queued control commands finish before that request starts.
+A second status read follows 35 seconds after the latest attempted command, and a
+60-second idle poll catches missed notifications. No movement command is retried.
+The listener reconnects after a connection failure and periodically renews the
+stream. Failed status requests mark covers unavailable; valid later responses
+restore availability.
+
+Opening and closing states compare the accepted or reported bottom-rail target
+with the reported current position. They describe reported direction, not measured
+motion or an estimated travel time. Missing positions or targets remain unknown.
 
 Reload the entry after pairing additional peripherals, because full discovery
-metadata is read at setup. Battery voltage is present in the upstream data model
-but this backend does not currently expose battery entities.
+metadata is read at setup. An optional **Battery reading** diagnostic sensor is
+created for each shade and disabled by default. Enable it in the entity settings
+if needed. It exposes finite numeric `BatteryVoltage` values unchanged, with no
+unit, percentage conversion, battery device class or low-battery threshold.
+Community clients disagree about the units; a nominal 3.7 V battery does not
+establish what the hub reports. A missing or malformed reading remains unknown.
 
 ## Reconfiguration and diagnostics
 
@@ -112,8 +138,17 @@ Use **Reconfigure** to change the hub address. The returned registration identit
 must match the saved hub. To use a different hub, add another entry. ShadeAuto has
 no additional options or Gen 1 password-recovery flow.
 
-Diagnostics contain the generation, device count and connection status. They do
-not include the hub address, identity, device names or raw API responses.
+Diagnostics contain the generation, device count and connection status, plus a
+`room_discovery` summary: raw room count, distinct valid room-ID count, usable
+room count, rejected room count, original room-ID type counts and rejection
+reason counts. Counts describe discovery at setup, not physical movement. They
+do not include the hub address, identity, room IDs, names or raw API responses.
+
+Download diagnostics from **Settings → Devices & services → Norman**, open the
+Gen 2 entry's three-dot menu and select **Download diagnostics**. If room devices
+are missing after restarting on b4, attach this download to the issue. Invalid
+room identities also produce a warning with only their type and rejection
+reason. Individual covers remain available when their room identity is invalid.
 
 ## Troubleshooting
 
