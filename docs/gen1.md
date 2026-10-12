@@ -44,6 +44,22 @@ The integration uses these local endpoints:
 
 Every integration operation is serialized as one login → request(s) → logout transaction. The hub issues a session cookie at login and refreshes it on later requests. Live testing confirms that the official app and Home Assistant can hold independent sessions, while serialization prevents Home Assistant's own polls, validation, and commands from overlapping.
 
+### Temporary login failures
+
+GatewayLogin HTTP 500 responses get up to three login attempts, five seconds
+apart, with the existing forced logout recovery performed at most once. Password,
+identity and malformed-response failures are not hidden by that retry budget.
+After a successful setup, up to two consecutive polls exhausted by these HTTP
+500s retain the last good snapshot; the third marks entities unavailable. A
+successful poll resets the allowance. Diagnostics report the consecutive failed
+poll count, so retained data is distinguishable from a fresh snapshot. Commands
+still report their own failures and are never automatically replayed.
+
+The timing is based on another Gen 1 maintainer's observations, rather than a
+guarantee about this hub's scheduled jobs. Initial setup still requires a working
+hub. Session batching, logout removal and room-metadata caching are unchanged
+pending physical hub qualification.
+
 ## Setup
 
 Enter:

@@ -34,10 +34,12 @@ async def async_get_config_entry_diagnostics(
     if entry.data.get(CONF_GENERATION, GEN1) == GEN2:
         from .gen2 import gen2_coordinator  # noqa: PLC0415
 
+        coordinator_gen2 = gen2_coordinator(entry)
         return {
             "generation": GEN2,
-            "device_count": len(gen2_coordinator(entry).data),
-            "connected": entry.runtime_data.last_update_success,
+            "device_count": len(coordinator_gen2.data),
+            "connected": coordinator_gen2.last_update_success,
+            "room_discovery": dict(coordinator_gen2.room_diagnostics),
         }
     coordinator = entry.runtime_data
     api = coordinator.api
@@ -69,6 +71,7 @@ async def async_get_config_entry_diagnostics(
             for key in SAFE_HUB_FIELDS
             if isinstance(value := api.hub_info.get(key), SAFE_VALUE_TYPES)
         },
+        "transient_login_failed_polls": coordinator.transient_failure_count,
         "snapshot": {
             "room_count": len(data.rooms),
             "window_count": len(data.windows),

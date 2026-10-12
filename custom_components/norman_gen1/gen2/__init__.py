@@ -13,7 +13,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import NormanApiClient, NormanApiError, NormanConnectionError
 from .coordinator import NormanCoordinator
 
-PLATFORMS = [Platform.COVER]
+PLATFORMS = [Platform.COVER, Platform.SENSOR]
 
 
 def gen2_coordinator(entry: ConfigEntry) -> NormanCoordinator:

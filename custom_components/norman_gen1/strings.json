@@ -17,7 +17,7 @@
       "rf_inventory_changed": "The bridge inventory changed. Review the rooms and submit again to confirm the new commissioning.",
       "rf_room_claimed": "A selected section already has a direct transmitter in another Norman RF entry. Deselect that room there before assigning it here.",
       "cannot_connect": "Could not connect to the Norman hub. Check the generation, IP address and network access.",
-      "hub_needs_restart": "The hub's local control service is not responding. Restart the Norman hub, wait for its status light to settle, then try again.",
+      "hub_needs_restart": "The hub's local control service is temporarily unavailable. Wait and try again. If the problem persists, check the hub and its network connection before considering a restart.",
       "invalid_auth": "The hub rejected the password.",
       "invalid_host": "Enter only an IP address, hostname, or root HTTP URL without credentials, a path, query, or fragment.",
       "no_devices": "The hub responded, but no rooms or shutter devices were discovered.",
@@ -278,7 +278,7 @@
       "message": "The Norman Gen 1 hub could not complete the shutter command."
     },
     "hub_needs_restart": {
-      "message": "The hub's local control service is not responding. Restart the Norman hub, wait for its status light to settle, then try again."
+      "message": "The hub's local control service is temporarily unavailable. Wait and try again. If the problem persists, check the hub and its network connection before considering a restart."
     },
     "invalid_auth": {
       "message": "The Norman Gen 1 hub rejected the configured password."

@@ -81,7 +81,7 @@ async def async_setup_entry(
         SERVICE_NUDGE_POSITION,
         {vol.Required("step"): vol.All(vol.Coerce(int), vol.Range(min=-100, max=100))},
         "async_nudge_position",
-        required_features=[CoverEntityFeature.SET_TILT_POSITION],
+        required_features=[CoverEntityFeature.SET_POSITION],
     )
     platform.async_register_entity_service(
         SERVICE_NUDGE_TILT,
@@ -141,6 +141,18 @@ class NormanCoverBase(CoordinatorEntity[NormanCoordinator], CoverEntity):
             return False
         # TODO: handle case where individual devices can go offline
         return self._device_id in self.coordinator.data
+
+    @property
+    def is_opening(self) -> bool | None:
+        """Report direction only while recent evidence supports movement."""
+        direction = self.coordinator.motion_direction(self._device_id)
+        return None if direction is None else direction > 0
+
+    @property
+    def is_closing(self) -> bool | None:
+        """Report direction only while recent evidence supports movement."""
+        direction = self.coordinator.motion_direction(self._device_id)
+        return None if direction is None else direction < 0
 
     @property
     def is_closed(self) -> bool | None:
@@ -234,6 +246,18 @@ class NormanBlind(NormanCoverBase):
         | CoverEntityFeature.CLOSE_TILT
         | CoverEntityFeature.SET_TILT_POSITION
     )
+
+    @property
+    def supported_features(self) -> CoverEntityFeature:
+        """Offer second-rail actions only when the hub has reported that rail."""
+        data = self.coordinator.data.get(self._device_id)
+        if data is not None and data.supports_middle_rail:
+            return self._attr_supported_features
+        return (
+            CoverEntityFeature.OPEN
+            | CoverEntityFeature.CLOSE
+            | CoverEntityFeature.SET_POSITION
+        )
 
     @property
     def current_cover_tilt_position(self) -> int | None:

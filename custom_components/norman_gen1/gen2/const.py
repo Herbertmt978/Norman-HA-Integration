@@ -10,6 +10,8 @@ PLATFORMS = [Platform.COVER]
 # Config entry keys
 CONF_HOST = "host"
 
+CONTROL_SPACING = 0.75  # seconds between control request starts per hub
+
 RECONNECT_INTERVAL = 15  # seconds to wait after disconnect before reconnecting
 NOTIF_MAX_DURATION = 300  # seconds, max time before forcing a reconnect
 

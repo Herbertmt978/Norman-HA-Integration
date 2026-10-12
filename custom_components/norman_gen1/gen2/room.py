@@ -65,6 +65,41 @@ class NormanRoomCover(CoordinatorEntity[NormanCoordinator], CoverEntity):
         ]
 
     @property
+    def supported_features(self) -> CoverEntityFeature:
+        """Offer second-rail actions only when every member supports them."""
+        members = self._members
+        if members and all(device.supports_middle_rail for device in members):
+            return self._attr_supported_features
+        return (
+            CoverEntityFeature.OPEN
+            | CoverEntityFeature.CLOSE
+            | CoverEntityFeature.SET_POSITION
+        )
+
+    def _direction(self, *, opening: bool) -> bool | None:
+        """Aggregate known directions without guessing missing targets."""
+        directions = [
+            self.coordinator.motion_direction(member.id) for member in self._members
+        ]
+        if 1 in directions and -1 in directions:
+            return None
+        if (1 if opening else -1) in directions:
+            return True
+        if not directions or any(value is None for value in directions):
+            return None
+        return False
+
+    @property
+    def is_opening(self) -> bool | None:
+        """Report whether any member has a higher bottom-rail target."""
+        return self._direction(opening=True)
+
+    @property
+    def is_closing(self) -> bool | None:
+        """Report whether any member has a lower bottom-rail target."""
+        return self._direction(opening=False)
+
+    @property
     def available(self) -> bool:
         """A disconnected hub or empty room cannot be controlled."""
         return self.coordinator.last_update_success and bool(self._members)

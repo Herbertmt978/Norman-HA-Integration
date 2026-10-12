@@ -17,6 +17,8 @@ _LOGGER = logging.getLogger(__name__)
 DEFAULT_APP_VERSION = "2.11.21"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
 GROUP_COMMAND_DELAY_SECONDS = 1.0
+LOGIN_ATTEMPTS = 3
+LOGIN_RETRY_DELAY_SECONDS = 5.0
 DEFAULT_OPEN_POSITION = 100
 DEFAULT_TILT_OPEN_POSITION = 37
 DEFAULT_CLOSE_POSITION = 0
@@ -206,30 +208,39 @@ class NormanGen1Api:
         """Authenticate and return the hub identity payload."""
         self._session_cookie = None
         payload = {"password": self.password, "app_version": self.app_version}
-        try:
-            data = await self._post("GatewayLogin", payload, require_session=False)
-        except CannotConnect as err:
-            if not _is_gateway_login_server_error(err):
-                raise
-            _LOGGER.warning(
-                "GatewayLogin returned HTTP 500 from Norman hub %s; forcing logout endpoints before retrying once",
-                self.host,
-            )
-            transition_cookie = await self.logout(force=True)
+        forced_logout = False
+        next_request_cookie: str | None = None
+        for attempt in range(1, LOGIN_ATTEMPTS + 1):
+            request_cookie = next_request_cookie
+            next_request_cookie = None
             try:
                 data = await self._post(
                     "GatewayLogin",
                     payload,
                     require_session=False,
-                    request_cookie=transition_cookie,
+                    request_cookie=request_cookie,
                 )
-            except CannotConnect as retry_err:
-                if _is_gateway_login_server_error(retry_err):
+                break
+            except CannotConnect as err:
+                if not _is_gateway_login_server_error(err):
+                    raise
+                if not forced_logout:
+                    _LOGGER.warning(
+                        "GatewayLogin returned HTTP 500 from Norman hub %s; "
+                        "clearing the session before retrying",
+                        self.host,
+                    )
+                    next_request_cookie = await self.logout(force=True)
+                    forced_logout = True
+                if attempt == LOGIN_ATTEMPTS:
                     raise HubNeedsRestart(
-                        "The Norman hub did not recover its login service; "
-                        "restart the hub and try again"
-                    ) from retry_err
-                raise
+                        "The Norman hub login service remained unavailable after "
+                        "three attempts; check the hub connection and try again. "
+                        "Restart the hub only if the problem persists."
+                    ) from err
+                await asyncio.sleep(LOGIN_RETRY_DELAY_SECONDS)
+        else:
+            raise AssertionError("Norman login retry loop did not return or raise")
         if "errorCode" in data:
             error_code = _as_int(data.get("errorCode"))
             if error_code is None or error_code != 0:

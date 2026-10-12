@@ -62,8 +62,15 @@ async def room_coordinator(hass):
     api.async_set_position = AsyncMock()
     coordinator = NormanCoordinator(hass, api, entry(hass))
     await coordinator.async_refresh()
-    with patch.object(
-        coordinator, "async_request_refresh", side_effect=coordinator.async_refresh
+    with (
+        patch.object(
+            coordinator, "async_request_refresh", side_effect=coordinator.async_refresh
+        ),
+        patch(
+            "custom_components.norman_gen1.gen2.coordinator.COMMAND_REFRESH_DELAY",
+            0.001,
+        ),
+        patch("custom_components.norman_gen1.gen2.coordinator.COMMAND_QUIET_PERIOD", 0),
     ):
         yield coordinator
     await coordinator.async_shutdown()
@@ -138,6 +145,7 @@ async def test_room_api_failure_stops_and_refreshes(
         )
     assert error.value.__cause__ is failure
     assert coordinator.api.async_set_position.await_count == failed_child + 1
+    await asyncio.sleep(0.02)
     coordinator.async_request_refresh.assert_awaited_once()
     assert coordinator.api.async_get_status.await_count == 2
     assert coordinator.target_position(7, "bottom") == (45 if failed_child else None)
@@ -167,6 +175,7 @@ async def test_room_command_error_survives_failed_status_refresh(room_coordinato
     assert error.value.__cause__ is command_error
     assert "movement is uncertain" in str(error.value)
     assert coordinator.api.async_set_position.await_count == 2
+    await asyncio.sleep(0.02)
     coordinator.async_request_refresh.assert_awaited_once()
     assert coordinator.api.async_get_status.await_count == 2
     assert not coordinator.last_update_success
@@ -264,6 +273,7 @@ async def test_room_cancellation_refreshes_attempted_command(room_coordinator):
     with pytest.raises(asyncio.CancelledError):
         await coordinator.async_set_room_position(1, bottom=45, middle=None)
     coordinator.api.async_set_position.assert_awaited_once_with(7, 45, 65)
+    await asyncio.sleep(0.02)
     coordinator.async_request_refresh.assert_awaited_once()
     assert coordinator.target_position(7, "bottom") is None
 
@@ -289,6 +299,7 @@ async def test_room_publishes_targets_before_debounced_refresh(room_coordinator)
     try:
         await coordinator.async_set_room_position(1, bottom=None, middle=75)
         assert snapshots == [(75, 65)]
+        await asyncio.sleep(0.02)
         coordinator.async_request_refresh.assert_awaited_once()
     finally:
         remove_listener()

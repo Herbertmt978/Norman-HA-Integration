@@ -17,7 +17,7 @@ from aiohttp import ClientResponse, ClientTimeout
 from aiohttp.client_exceptions import ClientError
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import NOTIF_MAX_DURATION, READ_CHUNK_SIZE
+from .const import CONTROL_SPACING, NOTIF_MAX_DURATION, READ_CHUNK_SIZE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,6 +56,10 @@ class NormanApiClient:
         self._session = session if session is not None else aiohttp.ClientSession()
         self._thing_name: str | None = None
         self._notif_response: ClientResponse | None = None
+        self._control_lock = asyncio.Lock()
+        self._last_control_sent: float | None = None
+        self._last_control_timestamp = 0
+        self._last_task_id = -1
 
     @property
     def thing_name(self) -> str | None:
@@ -136,7 +140,7 @@ class NormanApiClient:
             await self._async_registration()
 
         timestamp = int(time.time())
-        task_id = int(time.time() * 1000) % 10000  # Random task ID
+        task_id = self._next_task_id()
         payload: dict[str, Any] = {
             "ThingName": self._thing_name,
             "TaskID": task_id,
@@ -192,7 +196,10 @@ class NormanApiClient:
             return data
 
     async def async_set_position(
-        self, device_id: int, bottom_rail_position: int, middle_rail_position: int
+        self,
+        device_id: int,
+        bottom_rail_position: int,
+        middle_rail_position: int | None,
     ) -> None:
         """Set cover position.
 
@@ -206,23 +213,36 @@ class NormanApiClient:
             NormanConnectionError: If connection fails
 
         """
-        timestamp = int(time.time())
-        task_id = int(time.time() * 1000) % 10000  # Random task ID
-        payload = {
-            "PeripheralUID": device_id,
-            "Timestamp": timestamp,
-            "TaskID": task_id,
-            "BottomRailPosition": bottom_rail_position,
-            "MiddleRailPosition": middle_rail_position,
-        }
-
         try:
-            data = await self._post(ENDPOINT_CONTROL, payload)
+            async with self._control_lock:
+                if not self._thing_name:
+                    await self._async_registration()
+                if self._last_control_sent is not None:
+                    remaining = CONTROL_SPACING - (
+                        time.monotonic() - self._last_control_sent
+                    )
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
 
-            if data.get("Error", 0) != 0:
-                raise NormanApiError(
-                    f"Control request failed with error code: {data.get('Error')}"
-                )
+                # Allocate identifiers at send time, including after clock rollback.
+                timestamp = max(int(time.time()), self._last_control_timestamp + 1)
+                self._last_control_timestamp = timestamp
+                payload = {
+                    "ThingName": self._thing_name,
+                    "PeripheralUID": device_id,
+                    "Timestamp": timestamp,
+                    "TaskID": self._next_task_id(),
+                    "BottomRailPosition": bottom_rail_position,
+                }
+                if middle_rail_position is not None:
+                    payload["MiddleRailPosition"] = middle_rail_position
+                # A failed or cancelled request may still have reached the hub.
+                self._last_control_sent = time.monotonic()
+                data = await self._post(ENDPOINT_CONTROL, payload)
+                if data.get("Error", 0) != 0:
+                    raise NormanApiError(
+                        f"Control request failed with error code: {data.get('Error')}"
+                    )
 
         except (ClientError, TimeoutError) as err:
             raise NormanConnectionError(
@@ -230,6 +250,14 @@ class NormanApiClient:
             ) from err
         except (json.JSONDecodeError, KeyError) as err:
             raise NormanApiError(f"Invalid response from Norman hub: {err}") from err
+
+    def _next_task_id(self) -> int:
+        """Allocate distinct task IDs within the hub's signed 31-bit range."""
+        if self._last_task_id < 0:
+            self._last_task_id = int(time.time() * 1000) & 0x7FFFFFFF
+        else:
+            self._last_task_id = (self._last_task_id + 1) & 0x7FFFFFFF
+        return self._last_task_id
 
     async def async_close(self) -> None:
         """Close the API client session."""
