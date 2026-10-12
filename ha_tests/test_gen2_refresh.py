@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.exceptions import HomeAssistantError
 import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.norman_gen1.const import DOMAIN
 from custom_components.norman_gen1.gen2 import coordinator as coordinator_module
 from custom_components.norman_gen1.gen2.api import (
     NormanApiClient,
@@ -14,7 +16,10 @@ from custom_components.norman_gen1.gen2.api import (
 )
 from custom_components.norman_gen1.gen2.coordinator import NormanCoordinator
 
+from . import test_gen2_transport
 from .test_gen2 import entry
+
+shadeauto_transport = test_gen2_transport.shadeauto_transport
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
@@ -231,3 +236,134 @@ async def test_rejected_command_keeps_previous_verification_reads(
     await wait_for_status_call(coordinator)
     assert coordinator.api.async_get_status.await_count == 3
     assert coordinator.api.async_set_position.await_count == 1
+
+
+async def _setup_http_entry(hass, transport):
+    """Load the actual integration against the local HTTP hub."""
+    configured = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="gen2_shade-hub",
+        version=2,
+        data={"generation": "gen2", "host": "shadeauto.test"},
+    )
+    configured.add_to_hass(hass)
+    with patch(
+        "custom_components.norman_gen1.gen2.NormanApiClient",
+        side_effect=transport.client_factory,
+    ):
+        assert await hass.config_entries.async_setup(configured.entry_id)
+    return configured
+
+
+async def test_notification_does_not_cancel_inflight_http_status(
+    hass, shadeauto_transport, monkeypatch
+):
+    """A real stream update during a real status read leaves that read running."""
+    monkeypatch.setattr(coordinator_module, "COMMAND_REFRESH_DELAY", 0.01)
+    transport = shadeauto_transport
+    configured = await _setup_http_entry(hass, transport)
+    try:
+        initial_status_count = transport.requests.count("status")
+        transport.block_status()
+        transport.notifications.put_nowait(None)
+        await asyncio.wait_for(transport.status_started.wait(), timeout=1)
+        transport.notifications.put_nowait(None)
+        await asyncio.sleep(0.03)
+        # Replacement must not free the coordinator lock by cancelling the first read.
+        assert transport.requests.count("status") == initial_status_count + 1
+        transport.release_status.set()
+        await asyncio.sleep(0.03)
+        assert configured.runtime_data.last_update_success
+        assert transport.requests.count("status") >= initial_status_count + 1
+        assert await hass.config_entries.async_unload(configured.entry_id)
+    finally:
+        transport.release_status.set()
+        await hass.config_entries.async_unload(configured.entry_id)
+
+
+async def test_unload_cancels_detached_inflight_refresh(
+    hass, shadeauto_transport, monkeypatch
+):
+    """A refresh detached from its timer remains owned and cancellable on unload."""
+    monkeypatch.setattr(coordinator_module, "COMMAND_REFRESH_DELAY", 0.01)
+    transport = shadeauto_transport
+    configured = await _setup_http_entry(hass, transport)
+    try:
+        initial_status_count = transport.requests.count("status")
+        transport.block_status()
+        transport.notifications.put_nowait(None)
+        await asyncio.wait_for(transport.status_started.wait(), timeout=1)
+        coordinator = configured.runtime_data
+        assert await asyncio.wait_for(
+            hass.config_entries.async_unload(configured.entry_id), timeout=1
+        )
+        transport.release_status.set()
+        await asyncio.sleep(0.02)
+        assert not coordinator._refresh_tasks  # noqa: SLF001
+        assert transport.requests.count("status") == initial_status_count + 1
+    finally:
+        transport.release_status.set()
+        await hass.config_entries.async_unload(configured.entry_id)
+
+
+async def test_continuous_http_notifications_have_a_maximum_wait(
+    hass, shadeauto_transport, monkeypatch
+):
+    """Frequent stream messages cannot indefinitely postpone the status read."""
+    monkeypatch.setattr(coordinator_module, "COMMAND_REFRESH_DELAY", 0.03)
+    monkeypatch.setattr(coordinator_module, "NOTIFICATION_REFRESH_MAX_WAIT", 0.07)
+    transport = shadeauto_transport
+    configured = await _setup_http_entry(hass, transport)
+    try:
+        initial_status_count = transport.requests.count("status")
+        for _ in range(12):
+            transport.notifications.put_nowait(None)
+            await asyncio.sleep(0.01)
+        assert transport.requests.count("status") > initial_status_count
+        assert await hass.config_entries.async_unload(configured.entry_id)
+    finally:
+        transport.release_status.set()
+        await hass.config_entries.async_unload(configured.entry_id)
+
+
+async def test_notification_maximum_wait_still_waits_for_commands(
+    refresh_coordinator, monkeypatch
+):
+    """The max-wait cap cannot insert a read into a queued room command burst."""
+    coordinator = refresh_coordinator
+    monkeypatch.setattr(coordinator_module, "COMMAND_REFRESH_DELAY", 0.01)
+    monkeypatch.setattr(coordinator_module, "NOTIFICATION_REFRESH_MAX_WAIT", 0.03)
+    monkeypatch.setattr(coordinator_module, "COMMAND_QUIET_PERIOD", 0.01)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def control(*_args):
+        started.set()
+        await release.wait()
+
+    coordinator.api.async_set_position.side_effect = control
+    command = asyncio.create_task(
+        coordinator.async_set_room_position(1, bottom=50, middle=None)
+    )
+    await started.wait()
+    notifications = asyncio.Queue()
+
+    async def listen():
+        while True:
+            await notifications.get()
+            yield {"PeripheralList": []}
+
+    coordinator.api.async_listen_notifications = listen
+    listener = asyncio.create_task(coordinator.listen_notifications())
+    try:
+        for _ in range(8):
+            notifications.put_nowait(None)
+            await asyncio.sleep(0.01)
+        assert coordinator.api.async_get_status.await_count == 1
+        release.set()
+        await command
+        await wait_for_status_call(coordinator)
+    finally:
+        release.set()
+        listener.cancel()
+        await asyncio.gather(listener, command, return_exceptions=True)

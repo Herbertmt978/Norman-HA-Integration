@@ -78,17 +78,14 @@ class NormanRoomCover(CoordinatorEntity[NormanCoordinator], CoverEntity):
 
     def _direction(self, *, opening: bool) -> bool | None:
         """Aggregate known directions without guessing missing targets."""
-        comparisons: list[bool | None] = []
-        for member in self._members:
-            current = member.bottom_rail_position
-            target = self.coordinator.target_position(member.id, "bottom")
-            if current is None or target is None:
-                comparisons.append(None)
-            else:
-                comparisons.append(target > current if opening else target < current)
-        if any(value is True for value in comparisons):
+        directions = [
+            self.coordinator.motion_direction(member.id) for member in self._members
+        ]
+        if 1 in directions and -1 in directions:
+            return None
+        if (1 if opening else -1) in directions:
             return True
-        if not comparisons or any(value is None for value in comparisons):
+        if not directions or any(value is None for value in directions):
             return None
         return False
 

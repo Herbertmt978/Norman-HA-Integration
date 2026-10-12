@@ -6,6 +6,11 @@
 - Include the registered ThingName in control requests. Individual covers, HA cover groups and room covers use the same paced client.
 - Accept numeric-string room IDs without changing existing room or individual identities; retain individual covers for invalid room identities.
 - Add privacy-safe discovery warnings and diagnostic counts, ID types and rejection reasons for missing room devices.
+- Support bottom-only shades, including null middle-rail fields; preserve previously observed rails and offer tilt only after a valid rail value has been seen.
+- Protect in-flight status reads, bound notification debouncing to five seconds, add a 35-second command follow-up and poll every 60 seconds.
+- Bound movement states using live local targets or a 120-second observed-movement window, and report an unknown room direction when members move oppositely.
+- Expose optional disabled-by-default raw battery readings without assuming volts or percentages; correct the nudge service feature and suppress unchanged state writes.
+- Retry transient Gen 1 login HTTP 500s with bounded delays and retain a valid snapshot for at most two exhausted transient polls; hard failures invalidate retention.
 - Add transport and public-service regression coverage. These changes address plausible causes of issues #25 and #26; physical Gen 2 feedback remains required. No automatic movement retries or native room broadcast are added.
 - Stable v0.4.1 remains unchanged. This beta retains the inherited v0.5 RF and schema-compatibility work.
 

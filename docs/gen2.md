@@ -37,10 +37,10 @@ to each shade's own position, not the room average.
 
 All member positions are checked before any command is sent. If an untouched
 second rail has been reported by the hub but its position is unknown, nothing moves.
-A shade that has never reported either middle-rail field receives bottom-only
+A shade that has never reported a valid non-null middle-rail position or target receives bottom-only
 commands, with the middle field omitted from the request. It has no tilt actions.
 Once a second rail has been observed during the current integration load, a later
-missing field does not reclassify it. Rail observation starts afresh on reload.
+null or missing field does not reclassify it. Rail observation starts afresh on reload.
 A mixed room offers bottom-rail actions only. If a hub request fails after commands have started, the
 action reports the failure, stops sending further commands and refreshes status.
 Some shades may already have moved; a connection failure can also leave the failed
@@ -113,16 +113,23 @@ No stop action is exposed: the imported local API has no verified stop command.
 
 The integration discovers devices, fetches their status and opens a local
 notification stream. Notifications and command bursts schedule a status request
-after two quiet seconds; queued control commands finish before that request starts.
+after two quiet seconds, with a five-second maximum wait during a continuous
+notification stream. Queued control commands and their quiet period still finish
+before that request starts. A later notification does not cancel an active read.
 A second status read follows 35 seconds after the latest attempted command, and a
 60-second idle poll catches missed notifications. No movement command is retried.
 The listener reconnects after a connection failure and periodically renews the
 stream. Failed status requests mark covers unavailable; valid later responses
 restore availability.
 
-Opening and closing states compare the accepted or reported bottom-rail target
-with the reported current position. They describe reported direction, not measured
-motion or an estimated travel time. Missing positions or targets remain unknown.
+Opening and closing states compare a live local pending target with the current
+position. A reported hub target can indicate direction for up to 120 seconds after
+a detected position change; an unchanged stale target cannot extend that window.
+Expiry updates the entity even without a new status response. Rail preservation
+still uses the latest target independently of this motion limit. Missing positions
+or targets remain unknown, and a room with members moving in opposite directions
+reports neither opening nor closing. These are bounded direction indications,
+not measured motion or an estimated travel time.
 
 Reload the entry after pairing additional peripherals, because full discovery
 metadata is read at setup. An optional **Battery reading** diagnostic sensor is

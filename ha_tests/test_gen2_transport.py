@@ -65,6 +65,10 @@ async def shadeauto_transport(hass, socket_enabled):
     control_started = asyncio.Event()
     release_control = asyncio.Event()
     control_state = {"block_next": False}
+    status_started = asyncio.Event()
+    release_status = asyncio.Event()
+    status_state = {"block_next": False}
+    notifications = asyncio.Queue()
     app = web.Application()
 
     async def registration(_request: web.Request) -> web.Response:
@@ -100,6 +104,10 @@ async def shadeauto_transport(hass, socket_enabled):
 
     async def status(_request: web.Request) -> web.Response:
         requests.append("status")
+        if status_state["block_next"]:
+            status_state["block_next"] = False
+            status_started.set()
+            await release_status.wait()
         return web.json_response(
             {
                 "Error": 0,
@@ -128,10 +136,12 @@ async def shadeauto_transport(hass, socket_enabled):
         response = control_responses.pop(0) if control_responses else {"Error": 0}
         return web.json_response(response)
 
-    async def notification(_request: web.Request) -> web.Response:
-        # Keep the integration's listener open until the test unloads its entry.
-        await asyncio.Event().wait()
-        return web.json_response({})
+    async def notification(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        while True:
+            await notifications.get()
+            await response.write(b'{"PeripheralList": []}')
 
     app.router.add_post("/NM/v1/registration", registration)
     app.router.add_post("/NM/v1/GetAllPeripheral", devices)
@@ -161,6 +171,10 @@ async def shadeauto_transport(hass, socket_enabled):
                 single_rail_ids=single_rail_ids,
                 requests=requests,
                 control_responses=control_responses,
+                status_started=status_started,
+                release_status=release_status,
+                block_status=lambda: status_state.__setitem__("block_next", True),
+                notifications=notifications,
                 control_started=control_started,
                 release_control=release_control,
                 block_control=lambda: control_state.__setitem__("block_next", True),
@@ -172,6 +186,7 @@ async def shadeauto_transport(hass, socket_enabled):
             )
         finally:
             release_control.set()
+            release_status.set()
             await server.close()
 
 

@@ -144,17 +144,15 @@ class NormanCoverBase(CoordinatorEntity[NormanCoordinator], CoverEntity):
 
     @property
     def is_opening(self) -> bool | None:
-        """Report direction towards the accepted or reported bottom target."""
-        current = self.current_cover_position
-        target = self.coordinator.target_position(self._device_id, "bottom")
-        return None if current is None or target is None else target > current
+        """Report direction only while recent evidence supports movement."""
+        direction = self.coordinator.motion_direction(self._device_id)
+        return None if direction is None else direction > 0
 
     @property
     def is_closing(self) -> bool | None:
-        """Report direction towards the accepted or reported bottom target."""
-        current = self.current_cover_position
-        target = self.coordinator.target_position(self._device_id, "bottom")
-        return None if current is None or target is None else target < current
+        """Report direction only while recent evidence supports movement."""
+        direction = self.coordinator.motion_direction(self._device_id)
+        return None if direction is None else direction < 0
 
     @property
     def is_closed(self) -> bool | None:

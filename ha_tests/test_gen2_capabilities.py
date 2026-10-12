@@ -1,5 +1,6 @@
 """Cover actions follow reported rails without inventing hardware mappings."""
 
+import asyncio
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.norman_gen1.const import DOMAIN
+from custom_components.norman_gen1.gen2 import coordinator as coordinator_module
 from custom_components.norman_gen1.gen2.cover import NormanBlind
 from custom_components.norman_gen1.gen2.room import NormanRoomCover
 from custom_components.norman_gen1.gen2.sensor import NormanBatteryReading
@@ -65,16 +67,32 @@ async def test_middle_rail_observed_once_is_not_discarded(hass, shadeauto):
     await hass.config_entries.async_unload(configured.entry_id)
 
 
-async def test_explicit_unknown_middle_is_not_single_rail(hass, shadeauto):
-    """A present null value indicates an unknown rail rather than its absence."""
-    shadeauto.async_get_status.return_value["Peripherals"][0]["MiddleRailPosition"] = (
-        None
+@pytest.mark.parametrize("target", [None, 0])
+async def test_null_middle_requires_a_valid_observed_value(hass, shadeauto, target):
+    """A null placeholder does not create tilt support; a valid target does."""
+    shadeauto.async_get_status.return_value["Peripherals"][0].update(
+        MiddleRailPosition=None, TargetMiddleRailPosition=target
     )
     configured = test_gen2.entry(hass)
     assert await hass.config_entries.async_setup(configured.entry_id)
-    with pytest.raises(HomeAssistantError, match="unknown rail"):
-        await configured.runtime_data.async_set_room_position(1, bottom=40, middle=None)
-    shadeauto.async_set_position.assert_not_awaited()
+    coordinator = configured.runtime_data
+    cover_id = er.async_get(hass).async_get_entity_id(
+        "cover", DOMAIN, "gen2_shade-hub_7"
+    )
+    features = hass.states.get(cover_id).attributes["supported_features"]
+    assert bool(features & CoverEntityFeature.SET_TILT_POSITION) == (target is not None)
+    await hass.services.async_call(
+        "cover", "open_cover", {"entity_id": cover_id}, blocking=True
+    )
+    shadeauto.async_set_position.assert_awaited_once_with(7, 100, target)
+    if target is not None:
+        shadeauto.async_get_status.return_value["Peripherals"][0].update(
+            MiddleRailPosition=None, TargetMiddleRailPosition=None
+        )
+        # Clear the local command's other rail target: only bottom was requested.
+        await coordinator.async_refresh()
+        with pytest.raises(HomeAssistantError, match="unknown rail"):
+            await coordinator.async_set_room_position(1, bottom=40, middle=None)
     await hass.config_entries.async_unload(configured.entry_id)
 
 
@@ -189,4 +207,78 @@ async def test_enabled_battery_reading_uses_existing_shade_device(hass, shadeaut
     shadeauto.async_get_status.return_value["Peripherals"][0]["BatteryVoltage"] = 75
     await configured.runtime_data.async_refresh()
     assert hass.states.get(entity_id).state == "75"
+    await hass.config_entries.async_unload(configured.entry_id)
+
+
+async def test_room_mixed_directions_are_unknown(hass, shadeauto):
+    """A public room action cannot report simultaneous opening and closing."""
+    peripherals = shadeauto.async_get_devices.return_value["results"]["RoomList"][0][
+        "GroupList"
+    ][0]["PeripheralList"]
+    peripherals.append({"PeripheralUID": 8, "PeripheralName": "Other shade"})
+    shadeauto.async_get_status.return_value["Peripherals"].append(
+        {"PeripheralUID": 8, "BottomRailPosition": 80, "MiddleRailPosition": 65}
+    )
+    configured = test_gen2.entry(hass)
+    assert await hass.config_entries.async_setup(configured.entry_id)
+    room_id = er.async_get(hass).async_get_entity_id(
+        "cover", DOMAIN, "gen2_shade-hub_room_1"
+    )
+    await hass.services.async_call(
+        "cover",
+        "set_cover_position",
+        {"entity_id": room_id, "position": 50},
+        blocking=True,
+    )
+    room = NormanRoomCover(configured.runtime_data, 1, "Living room", configured)
+    assert room.is_opening is None and room.is_closing is None
+    assert hass.states.get(room_id).state == "open"
+    await hass.config_entries.async_unload(configured.entry_id)
+
+
+async def test_stale_hub_target_expires_without_a_status_change(
+    hass, shadeauto, monkeypatch
+):
+    """A stopped shade loses its motion claim while preserving its rail target."""
+    monkeypatch.setattr(coordinator_module, "MOTION_REPORT_TIMEOUT", 0.03)
+    shadeauto.async_get_status.return_value["Peripherals"][0][
+        "TargetBottomRailPosition"
+    ] = 90
+    configured = test_gen2.entry(hass)
+    assert await hass.config_entries.async_setup(configured.entry_id)
+    coordinator = configured.runtime_data
+    cover_id = er.async_get(hass).async_get_entity_id(
+        "cover", DOMAIN, "gen2_shade-hub_7"
+    )
+    assert hass.states.get(cover_id).state == "open"
+    shadeauto.async_get_status.return_value["Peripherals"][0]["BottomRailPosition"] = 40
+    await coordinator.async_refresh()
+    assert hass.states.get(cover_id).state == "opening"
+    await asyncio.sleep(0.05)
+    assert hass.states.get(cover_id).state == "open"
+    assert hass.states.get(cover_id).attributes["target_position"] == 90
+    # Equal data and a continuing stale target must not restart the window.
+    await coordinator.async_refresh()
+    assert hass.states.get(cover_id).state == "open"
+    await hass.config_entries.async_unload(configured.entry_id)
+
+
+async def test_pending_direction_expires_without_status_read(
+    hass, shadeauto, monkeypatch
+):
+    """A local pending target clears from HA even before the follow-up read."""
+    monkeypatch.setattr(coordinator_module, "PENDING_TARGET_TIMEOUT", 0.03)
+    configured = test_gen2.entry(hass)
+    assert await hass.config_entries.async_setup(configured.entry_id)
+    cover_id = er.async_get(hass).async_get_entity_id(
+        "cover", DOMAIN, "gen2_shade-hub_7"
+    )
+    await hass.services.async_call(
+        "cover", "open_cover", {"entity_id": cover_id}, blocking=True
+    )
+    assert hass.states.get(cover_id).state == "opening"
+    await asyncio.sleep(0.05)
+    assert hass.states.get(cover_id).state == "open"
+    assert hass.states.get(cover_id).attributes["target_position"] is None
+    assert shadeauto.async_get_status.await_count == 1
     await hass.config_entries.async_unload(configured.entry_id)

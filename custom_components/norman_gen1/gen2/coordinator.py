@@ -79,6 +79,8 @@ def _normalise_room_id(value: Any) -> tuple[int | None, str | None]:
 # Bound optimistic targets if the hub never acknowledges an accepted command.
 PENDING_TARGET_TIMEOUT = 30
 COMMAND_REFRESH_DELAY = 2
+NOTIFICATION_REFRESH_MAX_WAIT = 5
+MOTION_REPORT_TIMEOUT = 120
 COMMAND_FOLLOWUP_REFRESH_DELAY = 35
 COMMAND_QUIET_PERIOD = 2
 IDLE_UPDATE_INTERVAL = timedelta(seconds=60)
@@ -148,6 +150,10 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
         self._last_command_end: float | None = None
         self._near_refresh_task: asyncio.Task[None] | None = None
         self._followup_refresh_task: asyncio.Task[None] | None = None
+        self._refresh_tasks: set[asyncio.Task[None]] = set()
+        self._near_refresh_started: float | None = None
+        self._motion_expiry_task: asyncio.Task[None] | None = None
+        self._motion_deadlines: dict[int, float] = {}
         self._shutting_down = False
         self._middle_rail_devices: set[int] = set()
         self._pending_targets: dict[tuple[int, str], tuple[int, float]] = {}
@@ -204,7 +210,7 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
                         self._device_info = await self.api.async_get_devices()
                     status_data = await self.api.async_get_status()
                     devices = self._process_data(self._device_info, status_data)
-                    pending_changed = False
+                    pending_changed = self._record_motion(devices)
                     for key, (target, expires) in list(self._pending_targets.items()):
                         device_id, rail = key
                         data = devices.get(device_id)
@@ -216,6 +222,7 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
                         ):
                             del self._pending_targets[key]
                             pending_changed = True
+                    self._schedule_motion_expiry()
                     if (
                         pending_changed
                         and devices == self.data
@@ -235,6 +242,84 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
         if pending is not None and monotonic() < pending[1]:
             return pending[0]
         return getattr(self.data.get(device_id), f"target_{rail}_rail_position", None)
+
+    def motion_direction(self, device_id: int) -> int | None:
+        """Return a bounded bottom-rail direction without changing rail targets."""
+        data = self.data.get(device_id)
+        if data is None or data.bottom_rail_position is None:
+            return None
+        now = monotonic()
+        pending = self._pending_targets.get((device_id, "bottom"))
+        local_target_live = pending is not None and now < pending[1]
+        target = (
+            pending[0]
+            if pending is not None and local_target_live
+            else data.target_bottom_rail_position
+        )
+        if target is None:
+            return None
+        current = data.bottom_rail_position
+        if target == current:
+            return 0
+        if not local_target_live and now >= self._motion_deadlines.get(device_id, 0):
+            return None
+        return 1 if target > current else -1
+
+    def _record_motion(self, devices: NormanDevices) -> bool:
+        """Start a bounded reporting window only after an observed position change."""
+        now = monotonic()
+        expired = False
+        for device_id, deadline in list(self._motion_deadlines.items()):
+            if device_id not in devices or now >= deadline:
+                del self._motion_deadlines[device_id]
+                expired = True
+        previous = self.data or {}
+        for device_id, data in devices.items():
+            old = previous.get(device_id)
+            if (
+                old is not None
+                and old.bottom_rail_position is not None
+                and data.bottom_rail_position is not None
+                and old.bottom_rail_position != data.bottom_rail_position
+            ):
+                self._motion_deadlines[device_id] = now + MOTION_REPORT_TIMEOUT
+        return expired
+
+    def _schedule_motion_expiry(self) -> None:
+        """Publish expiry even if the hub data is unchanged or reads fail."""
+        self._cancel_refresh_task("_motion_expiry_task")
+        if self._shutting_down:
+            return
+        deadlines = list(self._motion_deadlines.values())
+        deadlines.extend(expires for _, expires in self._pending_targets.values())
+        if deadlines:
+            self._motion_expiry_task = self.hass.async_create_background_task(
+                self._expire_motion_after(max(0, min(deadlines) - monotonic())),
+                "ShadeAuto motion expiry",
+            )
+
+    async def _expire_motion_after(self, delay: float) -> None:
+        """Expire local motion evidence and update existing HA entity states."""
+        try:
+            await asyncio.sleep(delay)
+            self._motion_expiry_task = None
+            if self._shutting_down:
+                return
+            now = monotonic()
+            self._pending_targets = {
+                key: value
+                for key, value in self._pending_targets.items()
+                if now < value[1]
+            }
+            self._motion_deadlines = {
+                key: value
+                for key, value in self._motion_deadlines.items()
+                if now < value
+            }
+            self.async_update_listeners()
+            self._schedule_motion_expiry()
+        except asyncio.CancelledError:
+            return
 
     async def async_set_position(
         self,
@@ -357,6 +442,8 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
                     position,
                     monotonic() + PENDING_TARGET_TIMEOUT,
                 )
+
+        self._schedule_motion_expiry()
 
     def _process_data(
         self, device_info: dict[str, Any], status_data: dict[str, Any]
@@ -486,13 +573,6 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
 
                 # Update with status information on dataclass
                 device = devices[peripheral_uid]
-                if "MiddleRailPosition" in peripheral or (
-                    "TargetMiddleRailPosition" in peripheral
-                ):
-                    self._middle_rail_devices.add(peripheral_uid)
-                device.supports_middle_rail = (
-                    peripheral_uid in self._middle_rail_devices
-                )
                 device.bottom_rail_position = validate_position(
                     peripheral.get("BottomRailPosition")
                 )
@@ -504,6 +584,14 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
                 )
                 device.target_middle_rail_position = validate_position(
                     peripheral.get("TargetMiddleRailPosition")
+                )
+                if (
+                    device.middle_rail_position is not None
+                    or device.target_middle_rail_position is not None
+                ):
+                    self._middle_rail_devices.add(peripheral_uid)
+                device.supports_middle_rail = (
+                    peripheral_uid in self._middle_rail_devices
                 )
                 device.battery_level = peripheral.get("BatteryVoltage")
                 device.firmware_version = peripheral.get("FirmwareVersion")
@@ -556,16 +644,28 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
         )
 
     def _schedule_near_refresh(self) -> None:
-        """Debounce command and notification updates until the hub is quiet."""
-        if not self._shutting_down:
-            self._replace_refresh_task("_near_refresh_task", COMMAND_REFRESH_DELAY)
+        """Debounce notifications with a maximum wait before requesting a read."""
+        if self._shutting_down:
+            return
+        now = monotonic()
+        if self._near_refresh_started is None:
+            self._near_refresh_started = now
+        delay = min(
+            COMMAND_REFRESH_DELAY,
+            max(0, NOTIFICATION_REFRESH_MAX_WAIT - (now - self._near_refresh_started)),
+        )
+        self._replace_refresh_task("_near_refresh_task", delay)
 
     def _replace_refresh_task(self, attribute: str, delay: float) -> None:
+        """Replace only the sleeping timer; active requests remain owned until done."""
         self._cancel_refresh_task(attribute)
         task = self.hass.async_create_background_task(
-            self._refresh_after(delay), f"ShadeAuto deferred refresh ({attribute})"
+            self._refresh_after(attribute, delay),
+            f"ShadeAuto deferred refresh ({attribute})",
         )
         setattr(self, attribute, task)
+        self._refresh_tasks.add(task)
+        task.add_done_callback(self._refresh_tasks.discard)
 
     def _cancel_refresh_task(self, attribute: str) -> None:
         task = getattr(self, attribute)
@@ -573,10 +673,14 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
             task.cancel()
         setattr(self, attribute, None)
 
-    async def _refresh_after(self, delay: float) -> None:
-        """Request one coordinator refresh after a deferred interval."""
+    async def _refresh_after(self, attribute: str, delay: float) -> None:
+        """Detach a timer before starting a refresh so replacement cannot abort IO."""
         try:
             await asyncio.sleep(delay)
+            if getattr(self, attribute) is asyncio.current_task():
+                setattr(self, attribute, None)
+                if attribute == "_near_refresh_task":
+                    self._near_refresh_started = None
             if not self._shutting_down:
                 await self.async_request_refresh()
         except asyncio.CancelledError:
@@ -587,11 +691,11 @@ class NormanCoordinator(DataUpdateCoordinator[NormanDevices]):
         if self._shutting_down:
             return
         self._shutting_down = True
-        tasks = [
-            task
-            for task in (self._near_refresh_task, self._followup_refresh_task)
-            if task is not None and not task.done()
-        ]
+        tasks = [task for task in self._refresh_tasks if not task.done()]
+        if self._motion_expiry_task is not None and not self._motion_expiry_task.done():
+            tasks.append(self._motion_expiry_task)
+        self._motion_expiry_task = None
+        self._near_refresh_started = None
         self._near_refresh_task = None
         self._followup_refresh_task = None
         for task in tasks:
