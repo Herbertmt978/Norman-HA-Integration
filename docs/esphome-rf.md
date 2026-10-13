@@ -88,6 +88,19 @@ after a successful command. Every selected member becomes uncertain after a
 failed batch, even if some motors may have moved. State returns to unknown after
 entry reload. Do not use it as physical confirmation for safety decisions.
 
+Inventory polling, pre-command inventory reads and command actions have a
+12-second deadline. Transport failures include the operation, elapsed time and
+exception type, including when the underlying timeout has no message. Enable
+debug logging for `custom_components.norman_gen1.rf` to record operation start,
+completion and cancellation timing.
+
+A failed pre-command inventory read sends no movement command and preserves
+previous assumed positions. Once a command has been submitted, a timeout or
+cancellation leaves every selected section uncertain; other sections retain
+their previous intent. Cancellation propagates and the command lock is released.
+There is no automatic movement retry. These diagnostics do not establish why a
+bridge stops responding or whether a shutter physically moved.
+
 Existing hub covers are independent and their assumed state may be stale after
 RF movement. There is no automatic hub fallback or HA-level retry after an
 uncertain RF send. Firmware 0.9.2 can send two later identical bursts after a
@@ -121,8 +134,9 @@ loop. See the [firmware policy](https://github.com/Herbertmt978/norman-rf-bridge
 
 At the owner's request, the existing office/lounge sunrise/sunset automation
 was subsequently migrated and enabled using the two local ESP room covers.
-The sun triggers are unchanged. The lounge action follows five seconds after
-the office action completes; the previous hub configuration is backed up.
+The sun triggers are unchanged. As verified on 13 October 2026, the lounge action follows 25 seconds after
+the office action completes, with three later passes five minutes apart. There
+is no Home Assistant startup trigger. The previous hub configuration is backed up.
 Norman phone-app schedules are unchanged and must be disabled separately if
 they conflict. This is an explicit choice to use the experimental controls,
 not a whole-house reliability pass: the automatic-repeat trial reached 4/4

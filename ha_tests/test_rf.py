@@ -1,14 +1,17 @@
 """Whole-house learned RF transport tests using synthetic native API services."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from copy import deepcopy
 import json
+import re
 from unittest.mock import patch
 
 from homeassistant.core import SupportsResponse
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.update_coordinator import UpdateFailed
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -469,6 +472,157 @@ async def test_missing_changed_or_cancelled_target_never_retries(hass, bridge):
     await coordinator.async_refresh()
     assert not coordinator.last_update_success
     await coordinator.async_shutdown()
+
+
+@asynccontextmanager
+async def hanging_rf_service(hass, operation):
+    """Hold a real service dispatch and clean up older HA's shielded handler."""
+    entered, release = asyncio.Event(), asyncio.Event()
+    tasks = set()
+    calls = []
+    service = f"{PREFIX}_rf_targets_{operation}"
+    response = deepcopy(STATUS) if operation == "status" else None
+    supports_response = (
+        SupportsResponse.ONLY if operation == "status" else SupportsResponse.NONE
+    )
+
+    async def hanging(call):
+        calls.append(call)
+        tasks.add(asyncio.current_task())
+        entered.set()
+        await release.wait()
+        return deepcopy(response)
+
+    async def succeeding(call):
+        calls.append(call)
+        return deepcopy(response)
+
+    hass.services.async_register(
+        "esphome", service, hanging, supports_response=supports_response
+    )
+    try:
+        yield entered, calls
+    finally:
+        release.set()
+        # Older HA may leave the service handler running after cancelling its
+        # caller. Release it explicitly rather than relying on fixture teardown.
+        await asyncio.gather(
+            *(task for task in tasks if task is not asyncio.current_task()),
+            return_exceptions=True,
+        )
+        hass.services.async_register(
+            "esphome", service, succeeding, supports_response=supports_response
+        )
+
+
+async def test_hanging_status_reports_operation_and_recovers(hass, bridge):
+    """The actual deadline produces a useful polling error and permits recovery."""
+    coordinator = RFCoordinator(hass, saved_entry(hass))
+    try:
+        async with hanging_rf_service(hass, "status"):
+            with patch(
+                "custom_components.norman_gen1.rf.RF_REQUEST_TIMEOUT_SECONDS", 0.01
+            ):
+                with pytest.raises(UpdateFailed) as caught:
+                    await coordinator._async_update_data()  # noqa: SLF001
+                assert "status" in str(caught.value)
+                assert "TimeoutError" in str(caught.value)
+                assert re.search(r"after \d+\.\d{2}s", str(caught.value))
+                assert isinstance(caught.value.__cause__, HomeAssistantError)
+                assert isinstance(caught.value.__cause__.__cause__, TimeoutError)
+                await coordinator.async_refresh()
+                assert not coordinator.last_update_success
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success
+        assert bridge[1] == []
+    finally:
+        await coordinator.async_shutdown()
+
+
+async def test_hanging_preflight_preserves_intents_without_dispatch(hass, bridge):
+    """A failed status preflight neither transmits nor invalidates earlier intent."""
+    coordinator = RFCoordinator(hass, saved_entry(hass))
+    coordinator.intents.update({0: True, 1: False, 2: True})
+    try:
+        async with hanging_rf_service(hass, "status") as (_, calls):
+            with (
+                patch(
+                    "custom_components.norman_gen1.rf.RF_REQUEST_TIMEOUT_SECONDS", 0.01
+                ),
+                pytest.raises(HomeAssistantError) as caught,
+            ):
+                await coordinator.send(coordinator.targets[:2], False)
+            assert "pre-command status" in str(caught.value)
+            assert "TimeoutError" in str(caught.value)
+            assert re.search(r"after \d+\.\d{2}s", str(caught.value))
+            assert len(calls) == 1
+            assert bridge[1] == []
+            assert coordinator.intents == {0: True, 1: False, 2: True}
+        await coordinator.send(coordinator.targets[:2], False)
+        assert len(bridge[1]) == 1
+        assert coordinator.intents == {0: False, 1: False, 2: True}
+    finally:
+        await coordinator.async_shutdown()
+
+
+async def test_hanging_command_is_once_and_selected_intents_uncertain(hass, bridge):
+    """A possibly delivered command is never retried after its deadline expires."""
+    coordinator = RFCoordinator(hass, saved_entry(hass))
+    coordinator.intents.update({0: True, 1: False, 2: True})
+    try:
+        async with hanging_rf_service(hass, "command") as (_, calls):
+            with (
+                patch(
+                    "custom_components.norman_gen1.rf.RF_REQUEST_TIMEOUT_SECONDS", 0.01
+                ),
+                pytest.raises(HomeAssistantError) as caught,
+            ):
+                await coordinator.send(coordinator.targets[:2], False)
+            assert "command" in str(caught.value)
+            assert "TimeoutError" in str(caught.value)
+            assert re.search(r"after \d+\.\d{2}s", str(caught.value))
+            assert "all 2 selected" in str(caught.value)
+            assert "No automatic retry" in str(caught.value)
+            assert len(calls) == 1
+            assert coordinator.intents == {0: None, 1: None, 2: True}
+        await coordinator.send(coordinator.targets[:2], False)
+        assert len(calls) == 2
+        assert coordinator.intents == {0: False, 1: False, 2: True}
+    finally:
+        await coordinator.async_shutdown()
+
+
+@pytest.mark.parametrize("operation", ["status", "command"])
+async def test_cancellation_preserves_phase_semantics_and_releases_lock(
+    hass, bridge, operation
+):
+    """Caller cancellation propagates with uncertainty only after command dispatch."""
+    coordinator = RFCoordinator(hass, saved_entry(hass))
+    coordinator.intents.update({0: True, 1: False, 2: True})
+    task = None
+    try:
+        async with hanging_rf_service(hass, operation) as (entered, calls):
+            task = asyncio.create_task(coordinator.send(coordinator.targets[:2], False))
+            await asyncio.wait_for(entered.wait(), timeout=1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert len(calls) == 1
+            expected = (
+                {0: True, 1: False, 2: True}
+                if operation == "status"
+                else {0: None, 1: None, 2: True}
+            )
+            assert coordinator.intents == expected
+            if operation == "status":
+                assert bridge[1] == []
+        await coordinator.send(coordinator.targets[:2], False)
+        assert coordinator.intents == {0: False, 1: False, 2: True}
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await coordinator.async_shutdown()
 
 
 async def test_room_and_panel_unavailable_on_identity_change(hass, bridge):
