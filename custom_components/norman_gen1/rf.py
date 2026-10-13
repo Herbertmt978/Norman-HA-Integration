@@ -39,6 +39,10 @@ RF_REQUEST_TIMEOUT_SECONDS = 12.0
 # own record of the burst instead of abandoning the rest of the room.
 LOST_REPLY_RECOVERY_SECONDS = 20.0
 STATUS_POLL_SECONDS = 2.0
+# The bridge API occasionally misses a reply while its radio is busy. Keep the
+# last good inventory through this many consecutive failed polls so covers do
+# not briefly turn unavailable (HA skips actions for unavailable entities).
+RETAINED_FAILED_POLLS = 2
 _LOGGER = logging.getLogger(__name__)
 _PREFIX = re.compile(r"[a-z0-9_]+\Z")
 _FINGERPRINT = re.compile(r"[a-f0-9]{16}\Z")
@@ -243,15 +247,27 @@ class RFCoordinator(DataUpdateCoordinator[RFStatus]):
         self.bridge: str = entry.data[CONF_BRIDGE]
         self.targets = parse_targets(entry.data.get(CONF_TARGETS))
         self._command_lock = asyncio.Lock()
+        self._failed_polls = 0
         self.intents: dict[int, bool | None] = {
             target.slot: None for target in self.targets
         }
 
     async def _async_update_data(self) -> RFStatus:
         try:
-            return await read_status(self.hass, self.bridge)
+            status = await read_status(self.hass, self.bridge)
         except (HomeAssistantError, TimeoutError) as err:
+            self._failed_polls += 1
+            if self.data is not None and self._failed_polls <= RETAINED_FAILED_POLLS:
+                _LOGGER.debug(
+                    "%s; keeping the last good inventory (%s of %s failed polls)",
+                    err,
+                    self._failed_polls,
+                    RETAINED_FAILED_POLLS,
+                )
+                return self.data
             raise UpdateFailed(str(err)) from err
+        self._failed_polls = 0
+        return status
 
     def usable(self, status: RFStatus, target: RFTarget) -> bool:
         """Do not let changed templates, room membership or direction retarget HA."""

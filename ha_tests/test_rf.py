@@ -480,6 +480,9 @@ async def test_missing_changed_or_cancelled_target_never_retries(hass, bridge):
     assert coordinator.intents[0] is None and coordinator.intents[1] is None
     bridge[2].clear()
     bridge[2]["status"] = True
+    for _ in range(2):  # Transient failures keep the last good inventory.
+        await coordinator.async_refresh()
+        assert coordinator.last_update_success
     await coordinator.async_refresh()
     assert not coordinator.last_update_success
     await coordinator.async_shutdown()

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1b3 — 13 October 2026 (beta)
+
+- Keep the last good RF bridge inventory through two consecutive failed status polls, so a reply missed while the radio is busy no longer makes covers unavailable and silently skips automation actions.
+
 ## 0.5.1b2 — 13 October 2026 (beta)
 
 - RF rooms are sent as separate section commands again: one bridge-run sequence (0.5.1b1) repeatedly missed a lounge panel that separate commands moved every time (32/32 in camera trials).

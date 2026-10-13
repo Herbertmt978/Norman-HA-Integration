@@ -339,3 +339,23 @@ async def test_malformed_protocol4_status_rejected(hass, bridge, change):
     bridge.status = broken
     with pytest.raises(HomeAssistantError, match="Unsupported or malformed"):
         await read_status(hass, PREFIX)
+
+
+async def test_transient_poll_failures_keep_last_inventory(hass, bridge):
+    """Two consecutive failed polls keep covers available; the third does not."""
+    rf = coordinator(hass)
+    await rf.async_refresh()
+    assert rf.last_update_success
+    bridge.status_down = True
+    for _ in range(2):
+        await rf.async_refresh()
+        assert rf.last_update_success
+    await rf.async_refresh()
+    assert not rf.last_update_success
+    bridge.status_down = False
+    await rf.async_refresh()
+    assert rf.last_update_success
+    bridge.status_down = True
+    await rf.async_refresh()
+    assert rf.last_update_success  # A success resets the count.
+    await rf.async_shutdown()
