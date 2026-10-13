@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="brand/header.svg" alt="Norman for Home Assistant: stylised shutter panels" width="620">
+<img src="brand/header.svg" alt="Norman for Home Assistant: plantation shutter panels in warm daylight with a position slider" width="880">
 
 # Norman for Home Assistant
 
