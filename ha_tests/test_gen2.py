@@ -139,6 +139,14 @@ async def test_generation_choice_and_gen2_setup(hass, shadeauto):
         "generation": "gen2",
         "device_count": 1,
         "connected": True,
+        "room_discovery": {
+            "raw_room_count": 1,
+            "unique_room_id_count": 1,
+            "usable_room_count": 1,
+            "rejected_room_count": 0,
+            "room_id_type_counts": {"int": 1},
+            "rejection_reason_counts": {},
+        },
     }
     assert await hass.config_entries.async_unload(configured.entry_id)
     await hass.async_block_till_done()
@@ -372,10 +380,13 @@ async def test_transport_failure_normalized(error):
 
 async def test_control_payload():
     """The API sends both requested rails and the exact peripheral UID."""
-    session, context, _ = response_session({"Error": 0})
+    session, context, _ = response_session({"Error": 0, "ThingName": "hub"})
     api = NormanApiClient("host", session)
+    await api.async_validate_connection()
+    context.__aexit__.reset_mock()
     await api.async_set_position(7, 35, 65)
     payload = session.post.call_args.kwargs["json"]
+    assert payload["ThingName"] == "hub"
     assert {
         k: payload[k]
         for k in ("PeripheralUID", "BottomRailPosition", "MiddleRailPosition")
@@ -449,7 +460,6 @@ async def test_sparse_discovery_and_status(hass, shadeauto):
 async def test_notification_reconnect_and_cancellation(hass, shadeauto, failure):
     """Notifications refresh state and listener errors reconnect with bounded delay."""
     coordinator = NormanCoordinator(hass, shadeauto, entry(hass))
-    coordinator.async_refresh = AsyncMock()
 
     async def notifications():
         yield {"PeripheralList": []}
@@ -457,12 +467,15 @@ async def test_notification_reconnect_and_cancellation(hass, shadeauto, failure)
             raise failure
 
     shadeauto.async_listen_notifications = notifications
-    with patch(
-        "custom_components.norman_gen1.gen2.coordinator.asyncio.sleep",
-        side_effect=[None, asyncio.CancelledError()],
+    with (
+        patch.object(coordinator, "_schedule_near_refresh") as schedule,
+        patch(
+            "custom_components.norman_gen1.gen2.coordinator.asyncio.sleep",
+            side_effect=[None, asyncio.CancelledError()],
+        ),
     ):
         await coordinator.listen_notifications()
-    assert coordinator.async_refresh.await_count >= 1
+    assert schedule.call_count >= 1
     await coordinator.async_shutdown()
 
 
@@ -605,7 +618,7 @@ async def test_pending_target_relinquishes_to_hub(hass, shadeauto, acknowledgeme
         )
         shadeauto.async_get_status.return_value["Peripherals"][0][field] = 45
         with patch(
-            "custom_components.norman_gen1.gen2.coordinator.monotonic", return_value=11
+            "custom_components.norman_gen1.gen2.coordinator.monotonic", return_value=12
         ):
             await coordinator.async_refresh()
         # A later app command is authoritative once our command is acknowledged.
@@ -614,7 +627,7 @@ async def test_pending_target_relinquishes_to_hub(hass, shadeauto, acknowledgeme
         )
     with patch(
         "custom_components.norman_gen1.gen2.coordinator.monotonic",
-        return_value=41 if acknowledgement == "expiry" else 12,
+        return_value=41 if acknowledgement == "expiry" else 13,
     ):
         await coordinator.async_refresh()
         await coordinator.async_set_position(7, bottom=None, middle=75)

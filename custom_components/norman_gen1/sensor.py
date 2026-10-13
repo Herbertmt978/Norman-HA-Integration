@@ -14,6 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import NormanGen1Api, NormanRoom, NormanWindow
+from .const import CONF_GENERATION, GEN2
 from .coordinator import NormanConfigEntry, NormanDataUpdateCoordinator
 from .device import room_device_info
 from .helpers import BatteryMotorLabel, battery_motor_labels
@@ -27,6 +28,11 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up battery sensors for physical Norman window motors."""
+    if entry.data.get(CONF_GENERATION) == GEN2:
+        from .gen2.sensor import async_setup_entry as setup_gen2  # noqa: PLC0415
+
+        await setup_gen2(hass, entry, async_add_entities)
+        return
     coordinator = entry.runtime_data
     api = coordinator.api
     known_windows: set[int] = set()

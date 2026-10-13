@@ -23,6 +23,7 @@ class NormanPeripheralData:
     module_detail: int | None = None
     bottom_rail_position: int | None = None
     middle_rail_position: int | None = None
+    supports_middle_rail: bool = True
     target_bottom_rail_position: int | None = None
     target_middle_rail_position: int | None = None
     battery_level: float | None = None

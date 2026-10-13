@@ -37,6 +37,7 @@ from .const import (
     SERVICE_NUDGE_TILT,
 )
 from .coordinator import NormanCoordinator
+from .room import NormanRoomCover
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,17 +52,28 @@ async def async_setup_entry(
     """Set up Norman cover devices."""
     coordinator = cast(NormanCoordinator, entry.runtime_data)
 
-    entities: list[NormanCoverBase] = []
+    entities: list[CoverEntity] = []
+    rooms: dict[int, str] = {}
     for device_id, device_data in coordinator.data.items():
         cover_type = device_data.type
 
         if cover_type == COVER_TYPE_SMARTDRAPE:
             entities.append(NormanBlind(coordinator, device_id, entry))
+            if type(device_data.room_id) is int:
+                rooms.setdefault(
+                    device_data.room_id,
+                    device_data.room_name or f"Room {device_data.room_id}",
+                )
         else:
             # TODO: Support other kinds of blinds
             raise HomeAssistantError(
                 f"Unsupported cover type {cover_type} for device {device_id}"
             )
+
+    entities.extend(
+        NormanRoomCover(coordinator, room_id, room_name, entry)
+        for room_id, room_name in rooms.items()
+    )
 
     # Register a service to nudge the position of the blinds
     platform = async_get_current_platform()
@@ -69,7 +81,7 @@ async def async_setup_entry(
         SERVICE_NUDGE_POSITION,
         {vol.Required("step"): vol.All(vol.Coerce(int), vol.Range(min=-100, max=100))},
         "async_nudge_position",
-        required_features=[CoverEntityFeature.SET_TILT_POSITION],
+        required_features=[CoverEntityFeature.SET_POSITION],
     )
     platform.async_register_entity_service(
         SERVICE_NUDGE_TILT,
@@ -129,6 +141,18 @@ class NormanCoverBase(CoordinatorEntity[NormanCoordinator], CoverEntity):
             return False
         # TODO: handle case where individual devices can go offline
         return self._device_id in self.coordinator.data
+
+    @property
+    def is_opening(self) -> bool | None:
+        """Report direction only while recent evidence supports movement."""
+        direction = self.coordinator.motion_direction(self._device_id)
+        return None if direction is None else direction > 0
+
+    @property
+    def is_closing(self) -> bool | None:
+        """Report direction only while recent evidence supports movement."""
+        direction = self.coordinator.motion_direction(self._device_id)
+        return None if direction is None else direction < 0
 
     @property
     def is_closed(self) -> bool | None:
@@ -222,6 +246,18 @@ class NormanBlind(NormanCoverBase):
         | CoverEntityFeature.CLOSE_TILT
         | CoverEntityFeature.SET_TILT_POSITION
     )
+
+    @property
+    def supported_features(self) -> CoverEntityFeature:
+        """Offer second-rail actions only when the hub has reported that rail."""
+        data = self.coordinator.data.get(self._device_id)
+        if data is not None and data.supports_middle_rail:
+            return self._attr_supported_features
+        return (
+            CoverEntityFeature.OPEN
+            | CoverEntityFeature.CLOSE
+            | CoverEntityFeature.SET_POSITION
+        )
 
     @property
     def current_cover_tilt_position(self) -> int | None:

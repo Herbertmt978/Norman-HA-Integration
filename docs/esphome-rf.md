@@ -1,6 +1,6 @@
 # ESPHome RF bridge — experimental
 
-This is an unreleased section-and-room transport for the separately built
+This is an experimental section-and-room transport, included from v0.5.0, for the separately built
 [Norman RF Bridge](https://github.com/Herbertmt978/norman-rf-bridge). It does not
 turn a Zigbee coordinator or Wi-Fi adapter into a Norman radio.
 
@@ -40,7 +40,7 @@ No hub host, password or rolling counter is entered in this flow. The ESP is
 the sole owner of learned frames and persistent RF sequence. The selected bridge
 fingerprints, slots, room labels and endpoints prevent changed commissioning
 silently controlling different sections through an old HA entry. The firmware
-has32 slots; each interleaved room command accepts up to8 unique targets.
+has32 slots; each room accepts up to8 unique sections, sent one at a time.
 Setup rejects rooms over that limit and profiles already bound to another RF
 entry. Repeating another bridge's frames is still permitted: only direct-command
 ownership is exclusive. This does not coordinate counters across separate HA
@@ -75,18 +75,41 @@ arbitrary positioning or stop. The pilot's raw endpoints37/0/100 are firmware
 command labels, not measured HA percentages. Reconfigure refreshes explicitly
 changed commissioned bindings on the same bridge; it cannot switch bridges.
 
-Room commands are one bounded batch: the ESP preflights every target, durably
-reserves every rolling code, then interleaves packets. Each gets100 copies at55ms
-round cadence. Snapshot tests confirmed final positions, not simultaneous
-motor starts. This is not a guessed
-room-wide packet or simultaneous transmissions from one radio. One shared lock
-serializes room and section actions; a successful batch normally takes about6s.
+Room commands send one section at a time. After one inventory preflight, each
+section gets its own single-target command (100 copies at55ms, about6s) under
+the shared lock, so a four-section room takes about25s. This is not a guessed
+room-wide packet.
+
+Earlier versions sent a room as one firmware batch that interleaved every
+section's packets. That intermittently left sections unmoved even though their
+frames were on air, as the hub's own room-wide broadcast did. On 13 October 2026
+the lounge batch missed one of four panels on each of two camera-observed
+actions; three sequential close/open pairs then moved all 24 panel movements,
+with automatic repeats off. Paced sections also match the hub integration's
+reliable room path. This is a qualification of one room, not a whole-house or
+long-term reliability claim. Firmware cancels a section's pending automatic
+repeats when the next section is sent, so only the last section of a room
+receives them.
 
 Successful completion means the ESP finished its bounded RF burst, not that a
 motor acknowledged movement. Position starts unknown, is explicitly assumed
-after a successful command. Every selected member becomes uncertain after a
-failed batch, even if some motors may have moved. State returns to unknown after
-entry reload. Do not use it as physical confirmation for safety decisions.
+after a successful command. A failed section becomes uncertain, even if its
+motor may have moved; later sections in that room are not sent and keep their
+previous state. Nothing is retried automatically. State returns to unknown
+after entry reload. Do not use it as physical confirmation for safety decisions.
+
+Inventory polling, pre-command inventory reads and command actions have a
+12-second deadline. Transport failures include the operation, elapsed time and
+exception type, including when the underlying timeout has no message. Enable
+debug logging for `custom_components.norman_gen1.rf` to record operation start,
+completion and cancellation timing.
+
+A failed pre-command inventory read sends no movement command and preserves
+previous assumed positions. Once a command has been submitted, a timeout or
+cancellation leaves every selected section uncertain; other sections retain
+their previous intent. Cancellation propagates and the command lock is released.
+There is no automatic movement retry. These diagnostics do not establish why a
+bridge stops responding or whether a shutter physically moved.
 
 Existing hub covers are independent and their assumed state may be stale after
 RF movement. There is no automatic hub fallback or HA-level retry after an
@@ -121,8 +144,9 @@ loop. See the [firmware policy](https://github.com/Herbertmt978/norman-rf-bridge
 
 At the owner's request, the existing office/lounge sunrise/sunset automation
 was subsequently migrated and enabled using the two local ESP room covers.
-The sun triggers are unchanged. The lounge action follows five seconds after
-the office action completes; the previous hub configuration is backed up.
+The sun triggers are unchanged. As verified on 13 October 2026, the lounge action follows 25 seconds after
+the office action completes, with three later passes five minutes apart. There
+is no Home Assistant startup trigger. The previous hub configuration is backed up.
 Norman phone-app schedules are unchanged and must be disabled separately if
 they conflict. This is an explicit choice to use the experimental controls,
 not a whole-house reliability pass: the automatic-repeat trial reached 4/4

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.0 — 13 October 2026
+
+- Promote the v0.5.0 betas to stable: Gen 2 room covers, paced Gen 2 control requests with distinct identifiers, numeric-string room IDs, bottom-only shade support and Gen 1 login retries. See the [release notes](releases/v0.5.0.md).
+- RF room covers send each section as a separate command instead of one multi-target batch, after batched sends intermittently missed panels in camera-checked trials. A failed section becomes uncertain and later sections are not sent; no automatic retry.
+- RF timeouts name the failing operation and elapsed time; a failed pre-command status check sends nothing and preserves earlier assumed positions.
+- Gen 2 fixes for issues #25 and #26 still await confirmation on physical Gen 2 hardware.
+
+## 0.5.0b4 — 12 October 2026 (beta)
+
+- Space Gen 2 control requests by at least 750 ms per hub and allocate distinct command timestamps and signed 31-bit task IDs, including when the wall clock stalls or moves backwards.
+- Include the registered ThingName in control requests. Individual covers, HA cover groups and room covers use the same paced client.
+- Accept numeric-string room IDs without changing existing room or individual identities; retain individual covers for invalid room identities.
+- Add privacy-safe discovery warnings and diagnostic counts, ID types and rejection reasons for missing room devices.
+- Support bottom-only shades, including null middle-rail fields; preserve previously observed rails and offer tilt only after a valid rail value has been seen.
+- Protect in-flight status reads, bound notification debouncing to five seconds, add a 35-second command follow-up and poll every 60 seconds.
+- Bound movement states using live local targets or a 120-second observed-movement window, and report an unknown room direction when members move oppositely.
+- Expose optional disabled-by-default raw battery readings without assuming volts or percentages; correct the nudge service feature and suppress unchanged state writes.
+- Retry transient Gen 1 login HTTP 500s with bounded delays and retain a valid snapshot for at most two exhausted transient polls; hard failures invalidate retention.
+- Add transport and public-service regression coverage. These changes address plausible causes of issues #25 and #26; physical Gen 2 feedback remains required. No automatic movement retries or native room broadcast are added.
+- Stable v0.4.1 remains unchanged. This beta retains the inherited v0.5 RF and schema-compatibility work.
+
+## 0.5.0b3 — 11 October 2026 (beta)
+
+- Add a separate cover for each discovered Gen 2 ShadeAuto room, retaining individual covers.
+- Use existing per-shade commands sequentially, preserving each shade's other rail and pending target. Native simultaneous room broadcasts are not assumed.
+- Preflight all room members before sending commands; stop and report uncertainty on partial failure without automatic retries.
+- Add room discovery, public-service, reload, multi-hub and failure-path regression tests.
+- This opt-in beta includes the existing v0.5 RF work and Home Assistant schema-compatibility changes from main. Gen 2 room operation still needs user hardware testing; the maintainer only owns Gen 1. Stable v0.4.1 is unchanged.
+
 ## 0.5.0b1 — ESPHome RF bridge candidate
 
 - Add a separate commissioned ESPHome RF bridge entry without hub credentials,

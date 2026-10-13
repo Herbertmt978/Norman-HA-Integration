@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import re
+from time import monotonic
 from typing import Any, cast
 
 from homeassistant.components.cover import CoverEntity, CoverEntityFeature
@@ -33,6 +34,7 @@ from .const import DOMAIN
 RF = "esphome_rf"
 CONF_BRIDGE = "bridge"
 CONF_TARGETS = "targets"
+RF_REQUEST_TIMEOUT_SECONDS = 12.0
 _LOGGER = logging.getLogger(__name__)
 _PREFIX = re.compile(r"[a-z0-9_]+\Z")
 _FINGERPRINT = re.compile(r"[a-f0-9]{16}\Z")
@@ -113,17 +115,36 @@ def bridge_choices(hass: HomeAssistant) -> dict[str, str]:
     }
 
 
-async def read_status(hass: HomeAssistant, prefix: str) -> RFStatus:
-    """Read inventory only; no credentials, hub session or RF transmission."""
+async def read_status(
+    hass: HomeAssistant, prefix: str, *, operation: str = "status"
+) -> RFStatus:
+    """Read inventory with a named deadline; never transmit or retry RF."""
+    started = monotonic()
+    _LOGGER.debug("RF %s started for bridge %s", operation, prefix)
     if not _PREFIX.fullmatch(prefix) or prefix not in bridge_choices(hass):
         raise HomeAssistantError("The commissioned ESPHome RF bridge is unavailable")
-    async with asyncio.timeout(12):
-        result = await hass.services.async_call(
-            "esphome",
-            f"{prefix}_rf_targets_status",
-            blocking=True,
-            return_response=True,
+    try:
+        async with asyncio.timeout(RF_REQUEST_TIMEOUT_SECONDS):
+            result = await hass.services.async_call(
+                "esphome",
+                f"{prefix}_rf_targets_status",
+                blocking=True,
+                return_response=True,
+            )
+    except asyncio.CancelledError:
+        _LOGGER.debug(
+            "RF %s cancelled after %.2fs for bridge %s",
+            operation,
+            monotonic() - started,
+            prefix,
         )
+        raise
+    except (HomeAssistantError, TimeoutError) as err:
+        detail = str(err).strip() or "No response before the request deadline"
+        raise HomeAssistantError(
+            f"RF {operation} failed after {monotonic() - started:.2f}s "
+            f"({type(err).__name__}): {detail}"
+        ) from err
     if (
         not isinstance(result, dict)
         or type(result.get("protocol_version")) is not int
@@ -133,7 +154,14 @@ async def read_status(hass: HomeAssistant, prefix: str) -> RFStatus:
         or type(result.get("ready")) is not bool
     ):
         raise HomeAssistantError("Unsupported or malformed ESPHome RF status")
-    return RFStatus(cast(bool, result["ready"]), parse_targets(result.get("targets")))
+    status = RFStatus(cast(bool, result["ready"]), parse_targets(result.get("targets")))
+    _LOGGER.debug(
+        "RF %s completed after %.2fs for bridge %s",
+        operation,
+        monotonic() - started,
+        prefix,
+    )
+    return status
 
 
 def binding_data(status: RFStatus, rooms: list[str]) -> list[dict[str, Any]]:
@@ -205,7 +233,13 @@ class RFCoordinator(DataUpdateCoordinator[RFStatus]):
         )
 
     async def send(self, targets: tuple[RFTarget, ...], closed: bool) -> None:
-        """Reserve and interleave a bounded room batch; never retry uncertainty."""
+        """Send sections one at a time; never retry uncertainty.
+
+        Multi-target firmware batches put several sections' frames on air
+        together and intermittently missed panels, as the hub's room broadcast
+        did. Sequential single-section bursts moved every lounge panel in
+        camera-observed trials, matching the hub's paced room commands.
+        """
         if (
             not targets
             or len(targets) > 8
@@ -216,55 +250,78 @@ class RFCoordinator(DataUpdateCoordinator[RFStatus]):
                 "Select one to eight unique commissioned RF targets"
             )
         async with self._command_lock:
-            status = await read_status(self.hass, self.bridge)
+            status = await read_status(
+                self.hass, self.bridge, operation="pre-command status"
+            )
             if any(not self.usable(status, target) for target in targets):
                 raise HomeAssistantError(
                     "RF target unavailable or commissioning changed"
                 )
-            try:
-                # Firmware preflights every identity and persists every counter
-                # before emitting the first packet of any selected target.
-                async with asyncio.timeout(12):
-                    await self.hass.services.async_call(
-                        "esphome",
-                        f"{self.bridge}_rf_targets_command",
-                        {
-                            "targets_json": json.dumps(
-                                {
-                                    "slots": [target.slot for target in targets],
-                                    "profile_ids": [
-                                        target.profile_id for target in targets
-                                    ],
-                                    "positions": [
-                                        target.close_position
-                                        if closed
-                                        else target.open_position
-                                        for target in targets
-                                    ],
-                                },
-                                separators=(",", ":"),
-                            ),
-                        },
-                        blocking=True,
-                    )
-            except asyncio.CancelledError:
-                for target in targets:
-                    self.intents[target.slot] = None
-                self.async_update_listeners()
-                raise
-            except (HomeAssistantError, TimeoutError) as err:
-                for target in targets:
-                    self.intents[target.slot] = None
-                self.async_update_listeners()
-                raise HomeAssistantError(
-                    f"RF batch failed; all {len(targets)} selected sections are uncertain. "
-                    "No automatic retry."
-                ) from err
-            for target in targets:
-                self.intents[target.slot] = closed
+            for index, target in enumerate(targets):
+                await self._send_one(target, closed, len(targets) - index - 1)
+
+    async def _send_one(self, target: RFTarget, closed: bool, unsent: int) -> None:
+        """One section burst; a failure leaves later sections unsent and unchanged."""
+        started = monotonic()
+        _LOGGER.debug(
+            "RF command started for bridge %s slot %s", self.bridge, target.slot
+        )
+        try:
+            # Firmware preflights the identity and persists the counter before
+            # emitting the first packet.
+            async with asyncio.timeout(RF_REQUEST_TIMEOUT_SECONDS):
+                await self.hass.services.async_call(
+                    "esphome",
+                    f"{self.bridge}_rf_targets_command",
+                    {
+                        "targets_json": json.dumps(
+                            {
+                                "slots": [target.slot],
+                                "profile_ids": [target.profile_id],
+                                "positions": [
+                                    target.close_position
+                                    if closed
+                                    else target.open_position
+                                ],
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                    blocking=True,
+                )
+        except asyncio.CancelledError:
+            _LOGGER.debug(
+                "RF command cancelled after %.2fs for bridge %s; "
+                "section %s is uncertain and %s later section(s) were not sent",
+                monotonic() - started,
+                self.bridge,
+                target.slot,
+                unsent,
+            )
+            self.intents[target.slot] = None
             self.async_update_listeners()
-            # Hold the shared lock through firmware's250ms cooldown.
-            await asyncio.sleep(0.3)
+            raise
+        except (HomeAssistantError, TimeoutError) as err:
+            self.intents[target.slot] = None
+            self.async_update_listeners()
+            detail = str(err).strip() or "No response before the request deadline"
+            later = f"; {unsent} later section(s) were not sent" if unsent else ""
+            raise HomeAssistantError(
+                f"RF command failed after {monotonic() - started:.2f}s "
+                f"({type(err).__name__}): {detail}; "
+                f"section {target.name} is uncertain{later}. "
+                "No automatic retry."
+            ) from err
+        _LOGGER.debug(
+            "RF command action completed after %.2fs for bridge %s; "
+            "physical shutter state remains assumed",
+            monotonic() - started,
+            self.bridge,
+        )
+        self.intents[target.slot] = closed
+        self.async_update_listeners()
+        # Hold the shared lock through firmware's250ms cooldown.
+        await asyncio.sleep(0.3)
 
 
 def rf_coordinator(entry: ConfigEntry[Any]) -> RFCoordinator:
@@ -359,7 +416,7 @@ class RFCover(CoordinatorEntity[RFCoordinator], CoverEntity):
             "transport": RF,
             "physical_feedback": False,
             "command_scope": "room" if self.room is not None else "panel",
-            "room_transmission": "interleaved",
+            "room_transmission": "sequential",
             "target_slots": [target.slot for target in self.targets],
             "open_positions": [target.open_position for target in self.targets],
             "close_positions": [target.close_position for target in self.targets],
