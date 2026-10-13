@@ -49,7 +49,7 @@
       },
       "rf_rooms": {
         "title": "Rooms controlled by this ESP bridge",
-        "description": "Select rooms within this bridge's tested range. Each learned section may have only one direct-command bridge in this integration. Other ESP bridges can still repeat its signals. Each room uses an interleaved batch, not a native room broadcast.",
+        "description": "Select rooms within this bridge's tested range. Each learned section may have only one direct-command bridge in this integration. Other ESP bridges can still repeat its signals. Each room sends its sections one at a time, not a native room broadcast.",
         "data": {
           "rooms": "Rooms"
         }

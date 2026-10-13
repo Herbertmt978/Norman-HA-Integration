@@ -142,8 +142,8 @@ async def test_rf_flow_creates_panels_rooms_and_preserves_hub(
     await hass.services.async_call(
         "cover", "close_cover", {"entity_id": room.entity_id}, blocking=True
     )
-    assert [call["slots"] for call in bridge[1]] == [[0, 1]]
-    assert bridge[1][0]["positions"] == [0, 100]
+    assert [call["slots"] for call in bridge[1]] == [[0], [1]]
+    assert [call["positions"] for call in bridge[1]] == [[0], [100]]
     assert hass.states.get(room.entity_id).state == "closed"
     assert hass.states.get(panel.entity_id).state == "closed"
     await hass.services.async_call(
@@ -414,20 +414,30 @@ async def test_non_mapping_response_rejected(hass, bridge):
 
 
 async def test_shared_serializer_and_uncertain_room_failure(hass, bridge):
-    """A room is one batch; uncertainty affects every selected member only."""
+    """Rooms send sections one at a time; a failure never sends later sections."""
     coordinator = RFCoordinator(hass, saved_entry(hass))
     await coordinator.async_refresh()
     await asyncio.gather(
         coordinator.send(coordinator.targets[:2], True),
         coordinator.send(coordinator.targets[2:], False),
     )
-    assert [call["slots"] for call in bridge[1]] == [[0, 1], [2]]
+    assert [call["slots"] for call in bridge[1]] == [[0], [1], [2]]
+    assert [call["positions"] for call in bridge[1]] == [[0], [100], [37]]
+    assert coordinator.intents == {0: True, 1: True, 2: False}
+    bridge[1].clear()
+    bridge[2]["command"] = 0
+    with pytest.raises(HomeAssistantError, match="1 later section") as caught:
+        await coordinator.send(coordinator.targets[:2], False)
+    assert "section Panel 0 is uncertain" in str(caught.value)
+    assert [call["slots"] for call in bridge[1]] == [[0]]
+    assert coordinator.intents == {0: None, 1: True, 2: False}
     bridge[1].clear()
     bridge[2]["command"] = 1
-    with pytest.raises(HomeAssistantError, match="all 2 selected"):
-        await coordinator.send(coordinator.targets[:2], True)
-    assert [call["slots"] for call in bridge[1]] == [[0, 1]]
-    assert coordinator.intents == {0: None, 1: None, 2: False}
+    with pytest.raises(HomeAssistantError) as caught:
+        await coordinator.send(coordinator.targets[:2], False)
+    assert "later section" not in str(caught.value)
+    assert [call["slots"] for call in bridge[1]] == [[0], [1]]
+    assert coordinator.intents == {0: False, 1: None, 2: False}
     await coordinator.async_shutdown()
 
 
@@ -559,7 +569,7 @@ async def test_hanging_preflight_preserves_intents_without_dispatch(hass, bridge
             assert bridge[1] == []
             assert coordinator.intents == {0: True, 1: False, 2: True}
         await coordinator.send(coordinator.targets[:2], False)
-        assert len(bridge[1]) == 1
+        assert [call["slots"] for call in bridge[1]] == [[0], [1]]
         assert coordinator.intents == {0: False, 1: False, 2: True}
     finally:
         await coordinator.async_shutdown()
@@ -581,12 +591,12 @@ async def test_hanging_command_is_once_and_selected_intents_uncertain(hass, brid
             assert "command" in str(caught.value)
             assert "TimeoutError" in str(caught.value)
             assert re.search(r"after \d+\.\d{2}s", str(caught.value))
-            assert "all 2 selected" in str(caught.value)
+            assert "1 later section(s) were not sent" in str(caught.value)
             assert "No automatic retry" in str(caught.value)
             assert len(calls) == 1
-            assert coordinator.intents == {0: None, 1: None, 2: True}
+            assert coordinator.intents == {0: None, 1: False, 2: True}
         await coordinator.send(coordinator.targets[:2], False)
-        assert len(calls) == 2
+        assert len(calls) == 3
         assert coordinator.intents == {0: False, 1: False, 2: True}
     finally:
         await coordinator.async_shutdown()
@@ -611,7 +621,7 @@ async def test_cancellation_preserves_phase_semantics_and_releases_lock(
             expected = (
                 {0: True, 1: False, 2: True}
                 if operation == "status"
-                else {0: None, 1: None, 2: True}
+                else {0: None, 1: False, 2: True}
             )
             assert coordinator.intents == expected
             if operation == "status":
