@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1b2 — 13 October 2026 (beta)
+
+- RF rooms are sent as separate section commands again: one bridge-run sequence (0.5.1b1) repeatedly missed a lounge panel that separate commands moved every time (32/32 in camera trials).
+- With protocol 4 bridges, a lost action reply is checked against the bridge's command sequence and result; confirmed bursts count as sent, unaccepted commands are reported as not sent, and the remaining sections are always attempted unless the bridge is unreachable.
+
 ## 0.5.1b1 — 13 October 2026 (beta)
 
 - RF rooms on bridge firmware 0.12.0 (protocol 4) are sent as one command that the bridge paces section by section; HA polls the bridge for completion. API stalls can no longer cut a room short, and automatic repeats cover every section.

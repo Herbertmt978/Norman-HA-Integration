@@ -75,14 +75,15 @@ arbitrary positioning or stop. The pilot's raw endpoints37/0/100 are firmware
 command labels, not measured HA percentages. Reconfigure refreshes explicitly
 changed commissioned bindings on the same bridge; it cannot switch bridges.
 
-Room commands send one section at a time. With bridge firmware 0.12.0
-(protocol 4), HA sends one room command after an inventory preflight; the bridge
-sends each section's full burst (100 copies at55ms) with a short gap before the
-next, then reports completion, which HA polls for. A four-section room takes
-about24s. Because the bridge holds the whole room, a Wi-Fi or API stall cannot
-stop later sections, and its automatic repeats cover every section. A newer
-command preempts a running repeat. Older firmware receives one single-target
-command per section from HA instead. This is not a guessed room-wide packet.
+Room commands send one section at a time: after one inventory preflight, each
+section gets its own single-target command (100 copies at55ms, about6s), so a
+four-section room takes about25s. Firmware 0.12.0 can also run a whole room as
+one bridge-paced sequence, but in camera trials that missed lounge panel 2 on
+its first pass 5/5 while separate commands moved it every time, so HA does not
+use it. With 0.12.0 (protocol 4), a lost action reply is checked against the
+bridge's command sequence and result: a completed burst counts as sent, an
+unaccepted command is reported as not sent, otherwise the section is uncertain,
+and the remaining sections are still sent. This is not a guessed room-wide packet.
 
 Earlier versions sent a room as one firmware batch that interleaved every
 section's packets. That intermittently left sections unmoved even though their
@@ -91,9 +92,9 @@ the lounge batch missed one of four panels on each of two camera-observed
 actions; three sequential close/open pairs then moved all 24 panel movements,
 with automatic repeats off. Paced sections also match the hub integration's
 reliable room path. This is a qualification of one room, not a whole-house or
-long-term reliability claim. With older firmware, each section's pending
-automatic repeats are cancelled when the next section is sent, so only the last
-section of a room receives them; protocol 4 bridges repeat the whole room.
+long-term reliability claim. Each section's pending automatic repeats are
+cancelled when the next section is sent, so only the last section of a room
+receives them.
 
 Successful completion means the ESP finished its bounded RF burst, not that a
 motor acknowledged movement. Position starts unknown, is explicitly assumed

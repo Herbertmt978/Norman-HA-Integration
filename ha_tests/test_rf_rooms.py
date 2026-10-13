@@ -1,4 +1,4 @@
-"""Protocol 4 bridge-paced RF rooms using a synthetic stateful native API bridge."""
+"""Protocol 4 sections: separate commands with lost-reply recovery from bridge status."""
 
 import asyncio
 from copy import deepcopy
@@ -28,70 +28,65 @@ TARGETS = [
     }
     for i in range(3)
 ]
-FAST = (patch("custom_components.norman_gen1.rf.ROOM_POLL_SECONDS", 0),)
+FAST = patch("custom_components.norman_gen1.rf.STATUS_POLL_SECONDS", 0)
 
 
 class Bridge:
-    """Mutable protocol 4 bridge: rooms complete after a configurable poll count."""
+    """Mutable protocol 4 bridge with scriptable per-slot outcomes."""
 
     def __init__(self) -> None:
-        """Start idle with no accepted rooms."""
-        self.sequence = 0
-        self.completed = 0
-        self.result = "none_since_boot"
-        self.polls_until_done = 1
-        self.pending_polls = 0
-        self.outcome = "complete_not_acknowledged"
-        self.room_calls: list[dict] = []
-        self.target_calls: list[dict] = []
-        self.poll_failures = 0
-        self.accept: dict | None = None
-        self.reject = False
-        self.forget = False
+        """Start idle with four commands since boot."""
+        self.sequence = 4
+        self.completed = 4
+        self.result = "complete_not_acknowledged"
+        self.calls: list[list[int]] = []
+        self.lose: set[int] = set()  # Burst runs, reply is lost.
+        self.reject: set[int] = set()  # Never accepted.
+        self.fail: set[int] = set()  # Accepted, radio reports failure.
+        self.status_down = False
 
     def status(self) -> dict:
-        """Advance a pending room by one poll and report protocol 4 status."""
-        if self.pending_polls:
-            self.pending_polls -= 1
-            if not self.pending_polls:
-                self.completed, self.result = self.sequence, self.outcome
+        """Report protocol 4 status, or fail while the API is stalled."""
+        if self.status_down:
+            raise HomeAssistantError("Transient API stall")
         return {
             "protocol_version": 4,
             "batch_capacity": 8,
             "ready": True,
             "targets": deepcopy(TARGETS),
             "sequential_rooms": True,
-            "command_active": bool(self.pending_polls),
+            "command_active": False,
             "command_sequence": self.sequence,
             "completed_sequence": self.completed,
             "command_result": self.result,
         }
 
+    def command(self, slots: list[int]) -> None:
+        """Run one single-target command with the scripted outcome."""
+        self.calls.append(slots)
+        slot = slots[0]
+        if slot in self.reject:
+            raise HomeAssistantError("Target unavailable or busy")
+        self.sequence += 1
+        self.completed = self.sequence
+        failed = slot in self.fail
+        self.result = "radio_tx_failed" if failed else "complete_not_acknowledged"
+        if slot in self.lose:
+            raise TimeoutError
+        if failed:
+            raise HomeAssistantError("Radio burst failed; shutter state unknown")
+
 
 @pytest.fixture
 def bridge(hass):
-    """Register status, single-target and room actions; no radio is touched."""
+    """Register status and single-target actions; no radio is touched."""
     fake = Bridge()
 
     async def read(call):
-        if fake.pending_polls and fake.poll_failures:
-            fake.poll_failures -= 1
-            raise HomeAssistantError("Transient API stall")
         return fake.status()
 
     async def command(call):
-        fake.target_calls.append(json.loads(call.data["targets_json"]))
-
-    async def room(call):
-        fake.room_calls.append(json.loads(call.data["targets_json"]))
-        if fake.reject:
-            raise HomeAssistantError("Room rejected")
-        fake.sequence += 1
-        response = fake.accept or {"sequence": fake.sequence, "expected_ms": 10}
-        fake.pending_polls = fake.polls_until_done
-        if fake.forget:  # Bridge rebooted mid-room: its counters restart from zero.
-            fake.sequence = fake.completed = fake.pending_polls = 0
-        return response
+        fake.command(json.loads(call.data["targets_json"])["slots"])
 
     hass.services.async_register(
         "esphome",
@@ -100,12 +95,6 @@ def bridge(hass):
         supports_response=SupportsResponse.ONLY,
     )
     hass.services.async_register("esphome", f"{PREFIX}_rf_targets_command", command)
-    hass.services.async_register(
-        "esphome",
-        f"{PREFIX}_rf_room_command",
-        room,
-        supports_response=SupportsResponse.ONLY,
-    )
     return fake
 
 
@@ -126,130 +115,205 @@ def coordinator(hass) -> RFCoordinator:
     return RFCoordinator(hass, entry)
 
 
-async def test_room_is_one_bridge_paced_command(hass, bridge):
-    """A protocol 4 room is accepted once, then completion is polled."""
+async def test_room_sends_each_section_separately(hass, bridge):
+    """A healthy room is separate single-target commands, all confirmed."""
     rf = coordinator(hass)
-    bridge.polls_until_done = 3
-    with FAST[0]:
+    with FAST:
         await rf.send(rf.targets[:2], True)
-    assert bridge.room_calls == [
-        {
-            "slots": [0, 1],
-            "profile_ids": [TARGETS[0]["profile_id"], TARGETS[1]["profile_id"]],
-            "positions": [0, 100],
-        }
-    ]
-    assert bridge.target_calls == []
+    assert bridge.calls == [[0], [1]]
     assert rf.intents == {0: True, 1: True, 2: None}
     await rf.async_shutdown()
 
 
-async def test_single_section_keeps_target_command(hass, bridge):
-    """One section uses the existing blocking single-target action."""
+async def test_lost_reply_confirmed_by_bridge_continues(hass, bridge):
+    """A lost reply whose burst completed counts as sent; later sections follow."""
     rf = coordinator(hass)
-    with FAST[0]:
+    bridge.lose = {0}
+    with FAST:
+        await rf.send(rf.targets[:2], True)
+    assert bridge.calls == [[0], [1]]
+    assert rf.intents == {0: True, 1: True, 2: None}
+    await rf.async_shutdown()
+
+
+async def test_single_section_lost_reply_is_recovered(hass, bridge):
+    """Recovery also applies to an individual section cover."""
+    rf = coordinator(hass)
+    bridge.lose = {2}
+    with FAST:
         await rf.send(rf.targets[2:], False)
-    assert bridge.room_calls == []
-    assert [call["slots"] for call in bridge.target_calls] == [[2]]
     assert rf.intents[2] is False
     await rf.async_shutdown()
 
 
-async def test_polling_tolerates_transient_status_failures(hass, bridge):
-    """A stalled status read is retried as a read, never as movement."""
+async def test_rejected_section_is_reported_and_room_continues(hass, bridge):
+    """A command the bridge never accepted keeps its state; others still run."""
     rf = coordinator(hass)
-    bridge.polls_until_done = 2
-    bridge.poll_failures = 2
-    with FAST[0]:
+    rf.intents.update({0: False, 1: False, 2: True})
+    bridge.reject = {0}
+    with FAST, pytest.raises(HomeAssistantError) as caught:
         await rf.send(rf.targets[:2], True)
-    assert bridge.poll_failures == 0
-    assert len(bridge.room_calls) == 1
+    assert "1 of 2 section(s) unconfirmed: Panel 0 was not sent" in str(caught.value)
+    assert "No automatic retry" in str(caught.value)
+    assert bridge.calls == [[0], [1]]
+    assert rf.intents == {0: False, 1: True, 2: True}
+    await rf.async_shutdown()
+
+
+async def test_radio_failure_is_uncertain_and_room_continues(hass, bridge):
+    """A burst the bridge reports as failed is uncertain, never resent."""
+    rf = coordinator(hass)
+    bridge.fail = {0}
+    with FAST, pytest.raises(HomeAssistantError, match="Panel 0 is uncertain"):
+        await rf.send(rf.targets[:2], True)
+    assert bridge.calls == [[0], [1]]
+    assert rf.intents == {0: None, 1: True, 2: None}
+    await rf.async_shutdown()
+
+
+async def test_superseded_sequence_is_uncertain(hass, bridge):
+    """Another command completing in between makes the section uncertain."""
+    rf = coordinator(hass)
+    bridge.lose = {0}
+    original = bridge.command
+
+    def interleaved(slots):
+        try:
+            original(slots)
+        finally:
+            if slots == [0]:
+                bridge.sequence += 1  # Someone else's command ran meanwhile.
+                bridge.completed = bridge.sequence
+
+    bridge.command = interleaved
+    with FAST, pytest.raises(HomeAssistantError, match="Panel 0 is uncertain"):
+        await rf.send(rf.targets[:2], True)
+    assert bridge.calls == [[0], [1]]
+    assert rf.intents == {0: None, 1: True, 2: None}
+    await rf.async_shutdown()
+
+
+async def test_unreachable_bridge_stops_remaining_sections(hass, bridge):
+    """If no status can be read after a lost reply, later sections are not sent."""
+    rf = coordinator(hass)
+    rf.intents.update({0: False, 1: False, 2: True})
+    bridge.lose = {0}
+    original = bridge.command
+
+    def stall(slots):
+        try:
+            original(slots)
+        finally:
+            bridge.status_down = True
+
+    bridge.command = stall
+    with (
+        FAST,
+        patch("custom_components.norman_gen1.rf.LOST_REPLY_RECOVERY_SECONDS", 0),
+        pytest.raises(HomeAssistantError) as caught,
+    ):
+        await rf.send(rf.targets[:2], True)
+    assert "unreachable" in str(caught.value)
+    assert "1 later section(s) were not sent" in str(caught.value)
+    assert bridge.calls == [[0]]
+    assert rf.intents == {0: None, 1: False, 2: True}
+    await rf.async_shutdown()
+
+
+async def test_recovery_waits_through_status_stalls(hass, bridge):
+    """Transient status failures during recovery are read retries only."""
+    rf = coordinator(hass)
+    bridge.lose = {0}
+    original_command = bridge.command
+    original_status = bridge.status
+    stalls = {"left": 0}
+
+    def stall_then_recover(slots):
+        try:
+            original_command(slots)
+        finally:
+            if slots == [0]:
+                stalls["left"] = 2
+
+    def status():
+        if stalls["left"]:
+            stalls["left"] -= 1
+            raise HomeAssistantError("Transient API stall")
+        return original_status()
+
+    bridge.command = stall_then_recover
+    bridge.status = status
+    with FAST:
+        await rf.send(rf.targets[:2], True)
+    assert stalls["left"] == 0
+    assert bridge.calls == [[0], [1]]
     assert rf.intents == {0: True, 1: True, 2: None}
     await rf.async_shutdown()
 
 
-@pytest.mark.parametrize(
-    ("change", "message"),
-    [
-        ({"outcome": "radio_tx_failed"}, "bridge reported radio_tx_failed"),
-        ({"forget": True}, "lost or superseded"),
-        (
-            {"accept": {"sequence": 0, "expected_ms": 10}},
-            "Malformed RF room acceptance",
-        ),
-        ({"accept": {"sequence": 1, "expected_ms": 0}}, "Malformed RF room acceptance"),
-        (
-            {"accept": {"sequence": 1, "expected_ms": 999_999}},
-            "Malformed RF room acceptance",
-        ),
-        (
-            {"accept": {"sequence": True, "expected_ms": 10}},
-            "Malformed RF room acceptance",
-        ),
-        ({"reject": True}, "Room rejected"),
-    ],
-)
-async def test_room_failures_make_every_section_uncertain(
-    hass, bridge, change, message
-):
-    """Failure, reboot, malformed acceptance or rejection never retries."""
+async def test_active_command_is_awaited_before_judging(hass, bridge):
+    """Recovery waits while the bridge still reports its burst as active."""
     rf = coordinator(hass)
-    rf.intents.update({0: False, 1: False, 2: True})
-    for key, value in change.items():
-        setattr(bridge, key, value)
-    with FAST[0], pytest.raises(HomeAssistantError) as caught:
-        await rf.send(rf.targets[:2], True)
-    assert message in str(caught.value)
-    assert "all 2 selected sections are uncertain" in str(caught.value)
-    assert "No automatic retry" in str(caught.value)
-    assert len(bridge.room_calls) == 1
-    assert bridge.target_calls == []
-    assert rf.intents == {0: None, 1: None, 2: True}
+    bridge.lose = {0}
+    original_status = bridge.status
+    active = {"left": 2}
+
+    def status():
+        result = original_status()
+        if bridge.calls and active["left"]:
+            active["left"] -= 1
+            result["command_active"] = True
+        return result
+
+    bridge.status = status
+    with FAST:
+        await rf.send(rf.targets[:1], True)
+    assert active["left"] == 0
+    assert rf.intents[0] is True
     await rf.async_shutdown()
 
 
-async def test_completion_deadline_makes_room_uncertain(hass, bridge):
-    """A room that never reports completion expires instead of hanging."""
+async def test_recovery_deadline_without_completion_is_uncertain(hass, bridge):
+    """A burst still reported active when the window closes stays uncertain."""
     rf = coordinator(hass)
-    bridge.polls_until_done = 10_000
+    bridge.lose = {0}
+    original_status = bridge.status
+
+    def status():
+        result = original_status()
+        if bridge.calls:
+            result["command_active"] = True
+        return result
+
+    bridge.status = status
     with (
-        FAST[0],
-        patch("custom_components.norman_gen1.rf.ROOM_COMPLETION_MARGIN_SECONDS", 0),
-        pytest.raises(
-            HomeAssistantError, match="No room completion before the deadline"
-        ),
+        FAST,
+        patch("custom_components.norman_gen1.rf.LOST_REPLY_RECOVERY_SECONDS", 0),
+        pytest.raises(HomeAssistantError, match="Panel 0 is uncertain"),
     ):
-        await rf.send(rf.targets[:2], False)
-    assert rf.intents == {0: None, 1: None, 2: None}
+        await rf.send(rf.targets[:1], True)
+    assert rf.intents[0] is None
     await rf.async_shutdown()
 
 
-async def test_cancellation_while_polling_is_uncertain(hass, bridge):
-    """Caller cancellation after acceptance leaves the room uncertain."""
+async def test_cancellation_marks_current_section_uncertain(hass, bridge):
+    """Caller cancellation during a section leaves only that section uncertain."""
     rf = coordinator(hass)
     rf.intents.update({0: False, 1: False, 2: True})
-    bridge.polls_until_done = 10_000
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def hanging(call):
+        entered.set()
+        await release.wait()
+
+    hass.services.async_register("esphome", f"{PREFIX}_rf_targets_command", hanging)
     task = asyncio.create_task(rf.send(rf.targets[:2], True))
-    for _ in range(50):
-        if bridge.room_calls:
-            break
-        await asyncio.sleep(0)
-    assert bridge.room_calls
+    await asyncio.wait_for(entered.wait(), timeout=1)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert rf.intents == {0: None, 1: None, 2: True}
-    await rf.async_shutdown()
-
-
-async def test_protocol4_without_room_action_falls_back_per_section(hass, bridge):
-    """A bridge exposing protocol 4 status but no room action sends sections."""
-    hass.services.async_remove("esphome", f"{PREFIX}_rf_room_command")
-    rf = coordinator(hass)
-    with FAST[0]:
-        await rf.send(rf.targets[:2], True)
-    assert bridge.room_calls == []
-    assert [call["slots"] for call in bridge.target_calls] == [[0], [1]]
+    release.set()
+    assert rf.intents == {0: None, 1: False, 2: True}
     await rf.async_shutdown()
 
 
@@ -260,7 +324,7 @@ async def test_protocol4_without_room_action_falls_back_per_section(hass, bridge
         {"command_active": 1},
         {"command_sequence": "1"},
         {"completed_sequence": None},
-        {"completed_sequence": 2, "command_sequence": 1},
+        {"completed_sequence": 9, "command_sequence": 5},
         {"completed_sequence": -1},
         {"command_result": 3},
     ],

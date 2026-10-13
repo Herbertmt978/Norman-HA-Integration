@@ -35,10 +35,10 @@ RF = "esphome_rf"
 CONF_BRIDGE = "bridge"
 CONF_TARGETS = "targets"
 RF_REQUEST_TIMEOUT_SECONDS = 12.0
-# Protocol 4 rooms run on the bridge for longer than one action deadline.
-ROOM_COMPLETION_MARGIN_SECONDS = 15.0
-ROOM_POLL_SECONDS = 2.0
-ROOM_MAX_EXPECTED_MS = 120_000
+# Protocol 4 status lets a lost action reply be checked against the bridge's
+# own record of the burst instead of abandoning the rest of the room.
+LOST_REPLY_RECOVERY_SECONDS = 20.0
+STATUS_POLL_SECONDS = 2.0
 _LOGGER = logging.getLogger(__name__)
 _PREFIX = re.compile(r"[a-z0-9_]+\Z")
 _FINGERPRINT = re.compile(r"[a-f0-9]{16}\Z")
@@ -273,14 +273,14 @@ class RFCoordinator(DataUpdateCoordinator[RFStatus]):
         )
 
     async def send(self, targets: tuple[RFTarget, ...], closed: bool) -> None:
-        """Send sections one after another; never retry uncertainty.
+        """Send each section as its own command; never retry movement.
 
-        Interleaved firmware batches put several sections' frames on air
-        together and intermittently missed panels, as the hub's room broadcast
-        did. Sequential single-section bursts moved far more reliably. Protocol
-        4 bridges pace a whole room themselves from one accepted command, so a
-        Wi-Fi or API stall cannot cut a room short and automatic repeats cover
-        every section. Older bridges receive one command per section.
+        Several sections' frames on air together (firmware batches, interleaved
+        or bridge-paced) intermittently left panels unmoved, as the hub's room
+        broadcast did. Separate single-section commands moved every panel in
+        camera trials, matching the hub's paced room path. With protocol 4, a
+        lost action reply is checked against the bridge's command sequence and
+        result, and the remaining sections are still sent.
         """
         if (
             not targets
@@ -299,154 +299,131 @@ class RFCoordinator(DataUpdateCoordinator[RFStatus]):
                 raise HomeAssistantError(
                     "RF target unavailable or commissioning changed"
                 )
-            room_service = f"{self.bridge}_rf_room_command"
-            if (
-                len(targets) > 1
-                and status.protocol >= 4
-                and self.hass.services.has_service("esphome", room_service)
-            ):
-                await self._send_room(targets, closed)
+            if status.protocol < 4:
+                for index, target in enumerate(targets):
+                    await self._send_one(target, closed, len(targets) - index - 1)
                 return
+            expected = status.command_sequence + 1
+            problems: list[str] = []
             for index, target in enumerate(targets):
-                await self._send_one(target, closed, len(targets) - index - 1)
+                outcome, last = await self._send_confirmed(target, closed, expected)
+                if last is None:
+                    unsent = len(targets) - index - 1
+                    later = (
+                        f"; {unsent} later section(s) were not sent" if unsent else ""
+                    )
+                    raise HomeAssistantError(
+                        f"RF bridge unreachable after a lost reply; section "
+                        f"{target.name} is uncertain{later}. No automatic retry."
+                    )
+                if outcome is False:
+                    problems.append(f"{target.name} was not sent")
+                elif outcome is None:
+                    problems.append(f"{target.name} is uncertain")
+                expected = last + 1
+            if problems:
+                raise HomeAssistantError(
+                    f"RF command finished with {len(problems)} of {len(targets)} "
+                    f"section(s) unconfirmed: {'; '.join(problems)}. "
+                    "No automatic retry."
+                )
 
-    def _uncertain(self, targets: tuple[RFTarget, ...]) -> None:
-        for target in targets:
-            self.intents[target.slot] = None
-        self.async_update_listeners()
+    async def _call_target(self, target: RFTarget, closed: bool) -> None:
+        """Run one single-target action; firmware reserves the code before RF."""
+        async with asyncio.timeout(RF_REQUEST_TIMEOUT_SECONDS):
+            await self.hass.services.async_call(
+                "esphome",
+                f"{self.bridge}_rf_targets_command",
+                {
+                    "targets_json": json.dumps(
+                        {
+                            "slots": [target.slot],
+                            "profile_ids": [target.profile_id],
+                            "positions": [
+                                target.close_position
+                                if closed
+                                else target.open_position
+                            ],
+                        },
+                        separators=(",", ":"),
+                    ),
+                },
+                blocking=True,
+            )
 
-    async def _send_room(self, targets: tuple[RFTarget, ...], closed: bool) -> None:
-        """One accepted room command, then completion polling of the bridge."""
+    async def _send_confirmed(
+        self, target: RFTarget, closed: bool, expected: int
+    ) -> tuple[bool | None, int | None]:
+        """Protocol 4 section: True sent, False not sent, None uncertain.
+
+        Also returns the bridge's latest command sequence, or None when the
+        bridge could not be reached after a lost reply.
+        """
         started = monotonic()
-        count = len(targets)
-        payload = json.dumps(
-            {
-                "slots": [target.slot for target in targets],
-                "profile_ids": [target.profile_id for target in targets],
-                "positions": [
-                    target.close_position if closed else target.open_position
-                    for target in targets
-                ],
-            },
-            separators=(",", ":"),
-        )
         try:
-            sequence, expected = await self._accept_room(payload)
-            _LOGGER.debug(
-                "RF room sequence %s accepted by bridge %s for %s section(s)",
-                sequence,
-                self.bridge,
-                count,
-            )
-            await self._await_room(sequence, expected)
+            await self._call_target(target, closed)
         except asyncio.CancelledError:
-            _LOGGER.debug(
-                "RF room command cancelled after %.2fs for bridge %s; "
-                "selected shutter states are uncertain",
-                monotonic() - started,
-                self.bridge,
-            )
-            self._uncertain(targets)
+            self.intents[target.slot] = None
+            self.async_update_listeners()
             raise
         except (HomeAssistantError, TimeoutError) as err:
-            self._uncertain(targets)
-            detail = str(err).strip() or "No response before the request deadline"
-            raise HomeAssistantError(
-                f"RF room command failed after {monotonic() - started:.2f}s "
-                f"({type(err).__name__}): {detail}; all {count} selected sections "
-                "are uncertain. No automatic retry."
-            ) from err
-        _LOGGER.debug(
-            "RF room command completed after %.2fs for bridge %s; "
-            "physical shutter state remains assumed",
-            monotonic() - started,
-            self.bridge,
-        )
-        for target in targets:
-            self.intents[target.slot] = closed
-        self.async_update_listeners()
-        await asyncio.sleep(0.3)
-
-    async def _accept_room(self, payload: str) -> tuple[int, float]:
-        """Submit one room; return its sequence and expected duration in seconds."""
-        async with asyncio.timeout(RF_REQUEST_TIMEOUT_SECONDS):
-            response = await self.hass.services.async_call(
-                "esphome",
-                f"{self.bridge}_rf_room_command",
-                {"targets_json": payload},
-                blocking=True,
-                return_response=True,
+            _LOGGER.debug(
+                "RF reply for bridge %s slot %s failed after %.2fs (%s: %s); "
+                "checking the bridge's record",
+                self.bridge,
+                target.slot,
+                monotonic() - started,
+                type(err).__name__,
+                str(err).strip() or "no response",
             )
-        sequence = response.get("sequence") if isinstance(response, dict) else None
-        expected = response.get("expected_ms") if isinstance(response, dict) else None
-        if (
-            type(sequence) is not int
-            or sequence < 1
-            or type(expected) is not int
-            or not 0 < expected <= ROOM_MAX_EXPECTED_MS
-        ):
-            raise HomeAssistantError("Malformed RF room acceptance")
-        return sequence, expected / 1000
+            outcome, last = await self._recover(expected)
+            if outcome is True:
+                self.intents[target.slot] = closed
+            elif outcome is None:
+                self.intents[target.slot] = None
+            self.async_update_listeners()
+            await asyncio.sleep(0.3)
+            return outcome, last
+        self.intents[target.slot] = closed
+        self.async_update_listeners()
+        # Hold the shared lock through firmware's250ms cooldown.
+        await asyncio.sleep(0.3)
+        return True, expected
 
-    async def _await_room(self, sequence: int, expected: float) -> None:
-        """Poll status until this room's original burst reports its outcome."""
-        deadline = monotonic() + expected + ROOM_COMPLETION_MARGIN_SECONDS
-        await asyncio.sleep(expected)
+    async def _recover(self, expected: int) -> tuple[bool | None, int | None]:
+        """Read status until the bridge shows whether sequence `expected` ran."""
+        deadline = monotonic() + LOST_REPLY_RECOVERY_SECONDS
+        seen: int | None = None
         while True:
             try:
                 status = await read_status(
-                    self.hass, self.bridge, operation="room completion status"
+                    self.hass, self.bridge, operation="lost-reply status"
                 )
             except HomeAssistantError as err:
-                # Reading status is not a movement retry; keep polling.
-                _LOGGER.debug("%s; still waiting for room completion", err)
+                _LOGGER.debug("%s; still checking the lost reply", err)
             else:
-                if status.completed_sequence == sequence:
-                    if status.command_result != "complete_not_acknowledged":
-                        raise HomeAssistantError(
-                            f"bridge reported {status.command_result}"
+                seen = status.command_sequence
+                if not status.command_active:
+                    if status.command_sequence < expected:
+                        return False, seen  # Never accepted, so nothing was sent.
+                    if status.completed_sequence >= expected:
+                        done = (
+                            status.completed_sequence == expected
+                            and status.command_result == "complete_not_acknowledged"
                         )
-                    return
-                if (
-                    status.completed_sequence > sequence
-                    or status.command_sequence < sequence
-                ):
-                    raise HomeAssistantError(
-                        "bridge lost or superseded the room command"
-                    )
+                        return (True if done else None), seen
             if monotonic() >= deadline:
-                raise TimeoutError("No room completion before the deadline")
-            await asyncio.sleep(ROOM_POLL_SECONDS)
+                return None, seen
+            await asyncio.sleep(STATUS_POLL_SECONDS)
 
     async def _send_one(self, target: RFTarget, closed: bool, unsent: int) -> None:
-        """One section burst; a failure leaves later sections unsent and unchanged."""
+        """Protocol 3 section; a failure leaves later sections unsent."""
         started = monotonic()
         _LOGGER.debug(
             "RF command started for bridge %s slot %s", self.bridge, target.slot
         )
         try:
-            # Firmware preflights the identity and persists the counter before
-            # emitting the first packet.
-            async with asyncio.timeout(RF_REQUEST_TIMEOUT_SECONDS):
-                await self.hass.services.async_call(
-                    "esphome",
-                    f"{self.bridge}_rf_targets_command",
-                    {
-                        "targets_json": json.dumps(
-                            {
-                                "slots": [target.slot],
-                                "profile_ids": [target.profile_id],
-                                "positions": [
-                                    target.close_position
-                                    if closed
-                                    else target.open_position
-                                ],
-                            },
-                            separators=(",", ":"),
-                        ),
-                    },
-                    blocking=True,
-                )
+            await self._call_target(target, closed)
         except asyncio.CancelledError:
             _LOGGER.debug(
                 "RF command cancelled after %.2fs for bridge %s; "
