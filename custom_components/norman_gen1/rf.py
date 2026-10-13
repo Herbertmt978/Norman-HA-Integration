@@ -35,6 +35,10 @@ RF = "esphome_rf"
 CONF_BRIDGE = "bridge"
 CONF_TARGETS = "targets"
 RF_REQUEST_TIMEOUT_SECONDS = 12.0
+# Protocol 4 rooms run on the bridge for longer than one action deadline.
+ROOM_COMPLETION_MARGIN_SECONDS = 15.0
+ROOM_POLL_SECONDS = 2.0
+ROOM_MAX_EXPECTED_MS = 120_000
 _LOGGER = logging.getLogger(__name__)
 _PREFIX = re.compile(r"[a-z0-9_]+\Z")
 _FINGERPRINT = re.compile(r"[a-f0-9]{16}\Z")
@@ -60,6 +64,11 @@ class RFStatus:
 
     ready: bool
     targets: tuple[RFTarget, ...]
+    protocol: int = 3
+    command_active: bool = False
+    command_sequence: int = 0
+    completed_sequence: int = 0
+    command_result: str = ""
 
 
 def parse_targets(value: Any) -> tuple[RFTarget, ...]:
@@ -148,13 +157,44 @@ async def read_status(
     if (
         not isinstance(result, dict)
         or type(result.get("protocol_version")) is not int
-        or result["protocol_version"] != 3
+        or result["protocol_version"] not in (3, 4)
         or type(result.get("batch_capacity")) is not int
         or result["batch_capacity"] != 8
         or type(result.get("ready")) is not bool
     ):
         raise HomeAssistantError("Unsupported or malformed ESPHome RF status")
-    status = RFStatus(cast(bool, result["ready"]), parse_targets(result.get("targets")))
+    protocol = cast(int, result["protocol_version"])
+    active = result.get("command_active", False)
+    sequence = result.get("command_sequence", 0)
+    completed = result.get("completed_sequence", 0)
+    outcome = result.get("command_result", "")
+    if (
+        type(active) is not bool
+        or type(sequence) is not int
+        or type(completed) is not int
+        or not isinstance(outcome, str)
+        or (
+            protocol == 4
+            and (
+                result.get("sequential_rooms") is not True
+                or "command_active" not in result
+                or "command_sequence" not in result
+                or "completed_sequence" not in result
+                or "command_result" not in result
+                or not 0 <= completed <= sequence
+            )
+        )
+    ):
+        raise HomeAssistantError("Unsupported or malformed ESPHome RF status")
+    status = RFStatus(
+        cast(bool, result["ready"]),
+        parse_targets(result.get("targets")),
+        protocol,
+        active,
+        sequence,
+        completed,
+        outcome,
+    )
     _LOGGER.debug(
         "RF %s completed after %.2fs for bridge %s",
         operation,
@@ -233,12 +273,14 @@ class RFCoordinator(DataUpdateCoordinator[RFStatus]):
         )
 
     async def send(self, targets: tuple[RFTarget, ...], closed: bool) -> None:
-        """Send sections one at a time; never retry uncertainty.
+        """Send sections one after another; never retry uncertainty.
 
-        Multi-target firmware batches put several sections' frames on air
+        Interleaved firmware batches put several sections' frames on air
         together and intermittently missed panels, as the hub's room broadcast
-        did. Sequential single-section bursts moved every lounge panel in
-        camera-observed trials, matching the hub's paced room commands.
+        did. Sequential single-section bursts moved far more reliably. Protocol
+        4 bridges pace a whole room themselves from one accepted command, so a
+        Wi-Fi or API stall cannot cut a room short and automatic repeats cover
+        every section. Older bridges receive one command per section.
         """
         if (
             not targets
@@ -257,8 +299,124 @@ class RFCoordinator(DataUpdateCoordinator[RFStatus]):
                 raise HomeAssistantError(
                     "RF target unavailable or commissioning changed"
                 )
+            room_service = f"{self.bridge}_rf_room_command"
+            if (
+                len(targets) > 1
+                and status.protocol >= 4
+                and self.hass.services.has_service("esphome", room_service)
+            ):
+                await self._send_room(targets, closed)
+                return
             for index, target in enumerate(targets):
                 await self._send_one(target, closed, len(targets) - index - 1)
+
+    def _uncertain(self, targets: tuple[RFTarget, ...]) -> None:
+        for target in targets:
+            self.intents[target.slot] = None
+        self.async_update_listeners()
+
+    async def _send_room(self, targets: tuple[RFTarget, ...], closed: bool) -> None:
+        """One accepted room command, then completion polling of the bridge."""
+        started = monotonic()
+        count = len(targets)
+        payload = json.dumps(
+            {
+                "slots": [target.slot for target in targets],
+                "profile_ids": [target.profile_id for target in targets],
+                "positions": [
+                    target.close_position if closed else target.open_position
+                    for target in targets
+                ],
+            },
+            separators=(",", ":"),
+        )
+        try:
+            sequence, expected = await self._accept_room(payload)
+            _LOGGER.debug(
+                "RF room sequence %s accepted by bridge %s for %s section(s)",
+                sequence,
+                self.bridge,
+                count,
+            )
+            await self._await_room(sequence, expected)
+        except asyncio.CancelledError:
+            _LOGGER.debug(
+                "RF room command cancelled after %.2fs for bridge %s; "
+                "selected shutter states are uncertain",
+                monotonic() - started,
+                self.bridge,
+            )
+            self._uncertain(targets)
+            raise
+        except (HomeAssistantError, TimeoutError) as err:
+            self._uncertain(targets)
+            detail = str(err).strip() or "No response before the request deadline"
+            raise HomeAssistantError(
+                f"RF room command failed after {monotonic() - started:.2f}s "
+                f"({type(err).__name__}): {detail}; all {count} selected sections "
+                "are uncertain. No automatic retry."
+            ) from err
+        _LOGGER.debug(
+            "RF room command completed after %.2fs for bridge %s; "
+            "physical shutter state remains assumed",
+            monotonic() - started,
+            self.bridge,
+        )
+        for target in targets:
+            self.intents[target.slot] = closed
+        self.async_update_listeners()
+        await asyncio.sleep(0.3)
+
+    async def _accept_room(self, payload: str) -> tuple[int, float]:
+        """Submit one room; return its sequence and expected duration in seconds."""
+        async with asyncio.timeout(RF_REQUEST_TIMEOUT_SECONDS):
+            response = await self.hass.services.async_call(
+                "esphome",
+                f"{self.bridge}_rf_room_command",
+                {"targets_json": payload},
+                blocking=True,
+                return_response=True,
+            )
+        sequence = response.get("sequence") if isinstance(response, dict) else None
+        expected = response.get("expected_ms") if isinstance(response, dict) else None
+        if (
+            type(sequence) is not int
+            or sequence < 1
+            or type(expected) is not int
+            or not 0 < expected <= ROOM_MAX_EXPECTED_MS
+        ):
+            raise HomeAssistantError("Malformed RF room acceptance")
+        return sequence, expected / 1000
+
+    async def _await_room(self, sequence: int, expected: float) -> None:
+        """Poll status until this room's original burst reports its outcome."""
+        deadline = monotonic() + expected + ROOM_COMPLETION_MARGIN_SECONDS
+        await asyncio.sleep(expected)
+        while True:
+            try:
+                status = await read_status(
+                    self.hass, self.bridge, operation="room completion status"
+                )
+            except HomeAssistantError as err:
+                # Reading status is not a movement retry; keep polling.
+                _LOGGER.debug("%s; still waiting for room completion", err)
+            else:
+                if status.completed_sequence == sequence:
+                    if status.command_result != "complete_not_acknowledged":
+                        raise HomeAssistantError(
+                            f"bridge reported {status.command_result}"
+                        )
+                    return
+                if (
+                    status.completed_sequence > sequence
+                    or status.command_sequence < sequence
+                ):
+                    raise HomeAssistantError(
+                        "bridge lost or superseded the room command"
+                    )
+            if monotonic() >= deadline:
+                raise TimeoutError("No room completion before the deadline")
+            await asyncio.sleep(ROOM_POLL_SECONDS)
 
     async def _send_one(self, target: RFTarget, closed: bool, unsent: int) -> None:
         """One section burst; a failure leaves later sections unsent and unchanged."""

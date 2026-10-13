@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1b1 — 13 October 2026 (beta)
+
+- RF rooms on bridge firmware 0.12.0 (protocol 4) are sent as one command that the bridge paces section by section; HA polls the bridge for completion. API stalls can no longer cut a room short, and automatic repeats cover every section.
+- Older bridges keep one command per section. Gen 1 and Gen 2 hub behaviour is unchanged from v0.5.0.
+
 ## 0.5.0 — 13 October 2026
 
 - Promote the v0.5.0 betas to stable: Gen 2 room covers, paced Gen 2 control requests with distinct identifiers, numeric-string room IDs, bottom-only shade support and Gen 1 login retries. See the [release notes](releases/v0.5.0.md).
