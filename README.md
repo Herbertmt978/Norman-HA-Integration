@@ -22,15 +22,14 @@ both. The integration needs Home Assistant 2024.11.0 or newer and no cloud
 account. This is an independent community project, not an official Norman
 integration.
 
-**Opt-in beta:** [v0.5.0b4](docs/releases/v0.5.0b4.md) adds Gen 2 room covers,
-spaces shade commands and accepts numeric-string room IDs.
-Physical Gen 2 testing is still needed; the maintainer only has Gen 1 hardware.
-Stable v0.4.1 remains unchanged. Read the linked test and rollback instructions
-before installing the beta.
+**Current release:** [v0.5.0](docs/releases/v0.5.0.md) adds Gen 2 room covers,
+spaces shade commands and accepts numeric-string room IDs. Gen 2 room support
+has automated test coverage but still needs confirmation on physical Gen 2
+hardware; the maintainer only has Gen 1. Rollback steps are in the release notes.
 
 ## Experimental RF bridge
 
-The v0.5 beta also contains an **experimental ESPHome RF transport** for
+v0.5.0 also includes an **experimental ESPHome RF transport** for
 a commissioned ESP32/nRF24 bridge. It can control individual sections and rooms
 without a Norman hub, but it reports assumed state rather than measured shutter
 position. It has additional Home Assistant requirements, and existing hub entries
@@ -43,7 +42,7 @@ guide](docs/esphome-rf.md) before trying it.
 | --- | --- | --- |
 | Setup | Hub address, password and app version | Hub address; no Gen 1 password |
 | Local API | HTTP, normally port 80 | HTTP on fixed port 10123 |
-| Controls | Room and panel/group covers, Open, Close and position | Peripheral covers, Open, Close, position and tilt/second rail; room covers in the v0.5 beta |
+| Controls | Room and panel/group covers, Open, Close and position | Peripheral covers, Open, Close, position and tilt/second rail; room covers |
 | Position settings | Global, room and panel movement profiles | Upstream SmartDrape/two-rail mapping, 0–100 |
 | Battery sensors | One diagnostic percentage sensor per reported motor | Not currently exposed |
 | Updates | Polling every 60 seconds | Local notifications with status refreshes |

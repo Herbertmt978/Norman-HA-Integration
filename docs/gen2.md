@@ -52,9 +52,9 @@ if any member's position is unknown. The room is closed only when every member i
 closed, and becomes unavailable if its hub is unavailable or it has no members.
 The member count and mean pending targets are available as state attributes.
 
-This room-control addition is available for opt-in testing in **v0.5.0b4** and has
-not yet been checked on physical Gen 2 hardware. The maintainer only has a Gen 1 hub.
-See the [beta test and rollback instructions](releases/v0.5.0b4.md). The room commands in
+Room control is included from **v0.5.0** and has not yet been checked on physical
+Gen 2 hardware. The maintainer only has a Gen 1 hub. See the [release notes and
+rollback instructions](releases/v0.5.0.md). The room commands in
 [nsleigh/norman-blinds](https://github.com/nsleigh/norman-blinds) use the different
 legacy CGI API; they are not used for ShadeAuto. A verified Gen 2 app request would
 be needed before adding a native room-broadcast command.

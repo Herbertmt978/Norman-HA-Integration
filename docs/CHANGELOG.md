@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 — 13 October 2026
+
+- Promote the v0.5.0 betas to stable: Gen 2 room covers, paced Gen 2 control requests with distinct identifiers, numeric-string room IDs, bottom-only shade support and Gen 1 login retries. See the [release notes](releases/v0.5.0.md).
+- RF room covers send each section as a separate command instead of one multi-target batch, after batched sends intermittently missed panels in camera-checked trials. A failed section becomes uncertain and later sections are not sent; no automatic retry.
+- RF timeouts name the failing operation and elapsed time; a failed pre-command status check sends nothing and preserves earlier assumed positions.
+- Gen 2 fixes for issues #25 and #26 still await confirmation on physical Gen 2 hardware.
+
 ## 0.5.0b4 — 12 October 2026 (beta)
 
 - Space Gen 2 control requests by at least 750 ms per hub and allocate distinct command timestamps and signed 31-bit task IDs, including when the wall clock stalls or moves backwards.
