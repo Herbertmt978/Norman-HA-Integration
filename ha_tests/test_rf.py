@@ -139,6 +139,7 @@ async def test_rf_flow_creates_panels_rooms_and_preserves_hub(
     room = next(state for state in states if state.attributes["target_slots"] == [0, 1])
     assert panel.attributes["supported_features"] == 3
     assert panel.attributes["physical_feedback"] is False
+    assert room.attributes["room_transmission"] == "sequential"
     await hass.services.async_call(
         "cover", "close_cover", {"entity_id": room.entity_id}, blocking=True
     )

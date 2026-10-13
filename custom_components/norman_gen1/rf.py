@@ -416,7 +416,7 @@ class RFCover(CoordinatorEntity[RFCoordinator], CoverEntity):
             "transport": RF,
             "physical_feedback": False,
             "command_scope": "room" if self.room is not None else "panel",
-            "room_transmission": "interleaved",
+            "room_transmission": "sequential",
             "target_slots": [target.slot for target in self.targets],
             "open_positions": [target.open_position for target in self.targets],
             "close_positions": [target.close_position for target in self.targets],
