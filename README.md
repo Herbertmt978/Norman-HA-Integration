@@ -167,9 +167,11 @@ For HA tests on Linux, install `requirements_ha_minimum.txt` or
 `python -m pytest ha_tests -q`. Full typing and coverage commands are in
 [the test workflow](.github/workflows/tests.yml).
 
-Dependabot checks monthly for updates to the pinned Ruff, pytest, and
-pytest-asyncio test tools in `requirements_test.txt`. Only a single stable
-patch or minor update limited to that file may be queued for automatic merge.
+Dependabot checks monthly for updates to the pinned aiohttp, Ruff, pytest, and
+pytest-asyncio dependencies in `requirements_test.txt`. aiohttp updates require
+manual compatibility review and are never queued for automatic merge. Only a
+single stable patch or minor test-tool update limited to that file may be queued
+for automatic merge.
 Major and pre-release updates, Home Assistant compatibility fixtures, runtime
 dependencies, grouped updates, and unexpected file changes stay manual. GitHub
 branch protection still requires every check and resolved review conversation;
