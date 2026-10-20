@@ -6,6 +6,8 @@ updates:
       interval: monthly
     open-pull-requests-limit: 5
     allow:
+      # HTTP updates need compatibility review; the auto-merge policy excludes them.
+      - dependency-name: aiohttp
       - dependency-name: ruff
       - dependency-name: pytest
       - dependency-name: pytest-asyncio

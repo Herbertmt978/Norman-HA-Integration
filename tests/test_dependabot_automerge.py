@@ -457,7 +457,7 @@ class AutoMergePolicyTest(unittest.TestCase):
                 for line in DEPENDABOT_TEXT.splitlines()
                 if "- dependency-name:" in line
             ],
-            ["ruff", "pytest", "pytest-asyncio"],
+            ["aiohttp", "ruff", "pytest", "pytest-asyncio"],
         )
         self.assertNotIn("groups:", DEPENDABOT_TEXT)
 
