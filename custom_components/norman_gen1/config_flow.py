@@ -309,11 +309,7 @@ class ConfigFlow(RFLearningFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None, *, reconfigure: bool
     ) -> ConfigFlowResult:
         """Validate ShadeAuto identity and close the validation connection."""
-        from .gen2.api import (  # noqa: PLC0415 - Load ShadeAuto dependencies only for Gen 2.
-            NormanApiClient,
-            NormanApiError,
-            NormanConnectionError,
-        )
+        from .gen2.api import NormanApiClient, NormanApiError, NormanConnectionError  # noqa: PLC0415 - Load ShadeAuto dependencies only for Gen 2.
 
         entry = (
             self.hass.config_entries.async_get_entry(self.context.get("entry_id", ""))
