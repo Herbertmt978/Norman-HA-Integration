@@ -11,6 +11,8 @@ Local control for Norman Gen 1 and Gen 2 (ShadeAuto) shutter and blind hubs.
 [![Tests](https://github.com/Herbertmt978/Norman-HA-Integration/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Herbertmt978/Norman-HA-Integration/actions/workflows/tests.yml)
 ![Home Assistant 2024.11+](https://img.shields.io/badge/Home%20Assistant-2024.11%2B-18BCF2?logo=home-assistant&logoColor=white)
 
+[![Open this repository in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Herbertmt978&repository=Norman-HA-Integration&category=integration)
+
 [Install](#installation) · [Compare generations](#choose-your-generation) · [Automations](#automations) · [RF bridge preview](#experimental-rf-bridge) · [Limits](#network-and-hardware-limits) · [Development](#development-and-verification)
 
 </div>
