@@ -2,12 +2,14 @@
 
 import asyncio
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 from homeassistant.components.cover import CoverEntityFeature
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
+from homeassistant.util.yaml import load_yaml
 import pytest
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
@@ -49,6 +51,21 @@ async def test_bottom_only_cover_and_room_omit_middle_rail(hass, shadeauto):
     with pytest.raises(HomeAssistantError):
         await configured.runtime_data.async_set_position(7, bottom=None, middle=50)
     await hass.config_entries.async_unload(configured.entry_id)
+
+
+def test_action_targets_match_registered_rail_features():
+    """The action editor offers every cover that each nudge action accepts."""
+    services = load_yaml(
+        Path(__file__).parents[1] / "custom_components" / DOMAIN / "services.yaml"
+    )
+
+    assert {
+        name: service["target"]["entity"]["supported_features"]
+        for name, service in services.items()
+    } == {
+        "nudge_position": ["cover.CoverEntityFeature.SET_POSITION"],
+        "nudge_tilt": ["cover.CoverEntityFeature.SET_TILT_POSITION"],
+    }
 
 
 async def test_middle_rail_observed_once_is_not_discarded(hass, shadeauto):

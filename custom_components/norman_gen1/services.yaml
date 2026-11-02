@@ -6,7 +6,7 @@ nudge_position:
       integration: norman_gen1
       domain: cover
       supported_features:
-        - cover.CoverEntityFeature.SET_TILT_POSITION
+        - cover.CoverEntityFeature.SET_POSITION
   fields:
     step:
       required: true
