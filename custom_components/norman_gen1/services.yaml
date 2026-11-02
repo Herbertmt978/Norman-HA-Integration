@@ -5,6 +5,8 @@ nudge_position:
     entity:
       integration: norman_gen1
       domain: cover
+      # Gen 2 covers are blinds; Gen 1 shutters also set position but cannot nudge.
+      device_class: blind
       supported_features:
         - cover.CoverEntityFeature.SET_POSITION
   fields:

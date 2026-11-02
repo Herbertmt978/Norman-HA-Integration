@@ -7,6 +7,7 @@ from homeassistant.components.cover import (
     SERVICE_CLOSE_COVER,
     SERVICE_OPEN_COVER,
     SERVICE_SET_COVER_POSITION,
+    CoverDeviceClass,
 )
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
@@ -43,6 +44,16 @@ def _entity_id(hass: HomeAssistant, entry_id: str, unique_id: str) -> str:
         for entity in registry.entities.values()
         if entity.config_entry_id == entry_id and entity.unique_id == unique_id
     )
+
+
+async def test_covers_stay_out_of_gen2_nudge_targets(
+    hass: HomeAssistant, setup_integration
+) -> None:
+    """Gen 1 covers report as shutters, so blind-only nudge targets skip them."""
+    entry = setup_integration
+    for unique_id in ("hub-1_room_1", "hub-1_room_1_level_1"):
+        state = hass.states.get(_entity_id(hass, entry.entry_id, unique_id))
+        assert state.attributes["device_class"] == CoverDeviceClass.SHUTTER
 
 
 async def test_group_commands_use_home_assistant_position_semantics(
