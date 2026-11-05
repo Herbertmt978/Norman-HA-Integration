@@ -2,12 +2,14 @@
 
 import asyncio
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import patch
 
-from homeassistant.components.cover import CoverEntityFeature
+from homeassistant.components.cover import CoverDeviceClass, CoverEntityFeature
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
+from homeassistant.util.yaml import load_yaml
 import pytest
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
@@ -36,7 +38,9 @@ async def test_bottom_only_cover_and_room_omit_middle_rail(hass, shadeauto):
     cover = registry.async_get_entity_id("cover", DOMAIN, "gen2_shade-hub_7")
     room = registry.async_get_entity_id("cover", DOMAIN, "gen2_shade-hub_room_1")
     for entity_id in (cover, room):
-        features = hass.states.get(entity_id).attributes["supported_features"]
+        attributes = hass.states.get(entity_id).attributes
+        assert attributes["device_class"] == CoverDeviceClass.BLIND
+        features = attributes["supported_features"]
         assert features & CoverEntityFeature.SET_POSITION
         assert not features & CoverEntityFeature.SET_TILT_POSITION
         await hass.services.async_call(
@@ -49,6 +53,23 @@ async def test_bottom_only_cover_and_room_omit_middle_rail(hass, shadeauto):
     with pytest.raises(HomeAssistantError):
         await configured.runtime_data.async_set_position(7, bottom=None, middle=50)
     await hass.config_entries.async_unload(configured.entry_id)
+
+
+def test_action_targets_match_registered_rail_features():
+    """The action editor offers every Gen 2 cover that each nudge action accepts."""
+    services = load_yaml(
+        Path(__file__).parents[1] / "custom_components" / DOMAIN / "services.yaml"
+    )
+    position_target = services["nudge_position"]["target"]["entity"]
+
+    assert position_target["supported_features"] == [
+        "cover.CoverEntityFeature.SET_POSITION"
+    ]
+    # Gen 1 shutters also set position but have no nudge handlers.
+    assert position_target["device_class"] == CoverDeviceClass.BLIND
+    assert services["nudge_tilt"]["target"]["entity"]["supported_features"] == [
+        "cover.CoverEntityFeature.SET_TILT_POSITION"
+    ]
 
 
 async def test_middle_rail_observed_once_is_not_discarded(hass, shadeauto):
